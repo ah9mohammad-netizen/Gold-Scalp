@@ -1,4 +1,3 @@
-print("!!! DEBUG: Python script is starting...")
 import time
 from config import BotConfig
 from storage import Store
