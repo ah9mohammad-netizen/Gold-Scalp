@@ -33,12 +33,12 @@ def main():
         return
 
     while True:
-    cfg=BotConfig()
-    store=Store(cfg.db_path)
-    brain=StrategyBrain(cfg.model_path,cfg.meta_path)
-    engine=PaperEngine(cfg,store,brain)
-    tg=TelegramUI(cfg.telegram_token,cfg.telegram_chat_id,store)
-    tg.send(f"🤖 MTF ANN V3 paper bot started. Balance={store.balance():.2f} USDT. Pairs={cfg.pairs}. Risk={cfg.risk_per_trade_pct}% lev={cfg.leverage}x")
+        cfg=BotConfig()
+        store=Store(cfg.db_path)
+        brain=StrategyBrain(cfg.model_path,cfg.meta_path)
+        engine=PaperEngine(cfg,store,brain)
+        tg=TelegramUI(cfg.telegram_token,cfg.telegram_chat_id,store)
+        tg.send(f"🤖 MTF ANN V3 paper bot started. Balance={store.balance():.2f} USDT. Pairs={cfg.pairs}. Risk={cfg.risk_per_trade_pct}% lev={cfg.leverage}x")
     while True:
         try:
             tg.poll_once()
