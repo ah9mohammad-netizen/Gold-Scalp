@@ -8,6 +8,33 @@ from telegram_ui import TelegramUI
 
 
 def main():
+    try:
+        print("!!! DEBUG: Starting Bot Initialization...")
+        cfg = BotConfig()
+        print(f"!!! DEBUG: DB Path: {cfg.db_path}")
+        
+        store = Store(cfg.db_path)
+        print("!!! DEBUG: Store initialized.")
+        
+        brain = StrategyBrain(cfg.model_path, cfg.meta_path)
+        print("!!! DEBUG: Brain (AI Model) loaded.")
+        
+        engine = PaperEngine(cfg, store, brain)
+        print("!!! DEBUG: Engine initialized.")
+        
+        tg = TelegramUI(cfg.telegram_token, cfg.telegram_chat_id, store)
+        print("!!! DEBUG: Telegram UI initialized. Sending start message...")
+        
+        tg.send(f"🤖 MTF ANN V3 paper bot started. Balance={store.balance():.2f} USDT")
+        
+    except Exception as e:
+        print(f"!!! CRITICAL STARTUP ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    while True:
+        
     cfg=BotConfig()
     store=Store(cfg.db_path)
     brain=StrategyBrain(cfg.model_path,cfg.meta_path)
