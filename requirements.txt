@@ -1,0 +1,17 @@
+# Core Quantitative & Async Utilities
+asyncio==3.4.3
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+
+# Database Engine
+SQLAlchemy>=2.0.23
+aiosqlite>=0.19.0
+psycopg2-binary>=2.9.9
+
+# Exchange & Market Data API (For live CCXT / Bybit / Binance / Apex perps)
+ccxt>=4.1.0
+
+# Telegram UI Integration
+aiogram>=3.3.0
+python-telegram-bot>=20.7
