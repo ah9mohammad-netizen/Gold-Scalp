@@ -274,15 +274,22 @@ class PaperTradingEngine:
         db.update_signal_status(signal_id, "EXECUTED")
 
         setup = plan.get("setup_name", "SETUP")
+        z_txt = ""
+        if plan.get("zscore") is not None:
+            z_txt = f"Z-Score: <b>{float(plan['zscore']):+.2f}</b>\n"
+        be_txt = ""
+        if config.BE_TRIGGER_RR < 5:
+            be_txt = (
+                f"BE arm: <b>${plan['tp1_price']:.2f}</b> ({config.BE_TRIGGER_RR:.1f}R)\n"
+            )
         self.emit_alert(
             f"🚀 <b>NEW PAPER TRADE #{trade_id}</b> · <code>{config.STRATEGY_VERSION}</code>\n"
             f"Setup: <b>{setup}</b> | <b>{plan['direction']}</b> {plan['symbol']}\n"
             f"Entry: <b>${plan['entry_price']:.2f}</b>\n"
+            f"{z_txt}"
             f"SL: <b>${plan['sl_price']:.2f}</b> (−${plan['sl_distance']:.2f})\n"
-            f"BE arm: <b>${plan['tp1_price']:.2f}</b> ({config.BE_TRIGGER_RR:.1f}R)\n"
+            f"{be_txt}"
             f"Take Profit: <b>${plan['tp2_price']:.2f}</b> ({config.TP_RR_RATIO:.1f}R)\n"
-            f"Trail after BE: <b>{'ON' if config.ENABLE_TRAIL else 'OFF'}</b> "
-            f"({config.TRAIL_ATR_MULTIPLIER:.1f}×ATR)\n"
             f"Size: <b>{plan['size_oz']} oz</b> | Margin "
             f"<b>${plan['required_margin_usd']:.2f}</b> ({plan['leverage']}x)\n"
             f"Risk: <b>${plan['dollar_risk']:.2f}</b>\n"

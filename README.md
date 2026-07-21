@@ -1,66 +1,32 @@
-# Gold-Scalp — Gold Edge v4 (XAU-USDT)
+# Gold-Scalp — Gold Edge v5 (XAU-USDT)
 
-24/7 gold day-trading engine for **XAU-USDT** — **v4 overhaul** after real-history backtest:
+24/7 gold engine driven by **research on your real 5m history** (443k bars).
 
-- **Primary setup:** EMA21 pullback in trend (London 08–11 UTC)  
-- **Exits:** TP **2.0R** · BE only after **1.5R** · trail **off** (v3 BE@1R was the killer)  
-- Noise setups (naked Asia break / NY ORB / sweep) **off by default**  
-- **Paper trading** from **$100 USDT** · SQLite **`/data/history.db`** · **Telegram** UI  
+## Strategy (v5)
 
-Specs: [`STRATEGY_V4.md`](STRATEGY_V4.md) · prior research: [`STRATEGY_V3.md`](STRATEGY_V3.md)
+**Z-Score mean reversion in strict ranges** (N30-style), not breakouts:
 
-## Quick start (local)
+- Enter when \|Z\| ≥ **2.2** (SMA20) and **ADX ≤ 18**
+- Turn-bar confirmation  
+- SL **2.5×ATR** · TP **2.0R** · no early BE  
+- Sessions **07–17 UTC** · risk **1%** · max **3**/day  
+
+Breakout / ORB / EMA-cross families were tested and **rejected** (account-destroying on this sample).
+
+## Docs
+
+- [`STRATEGY_V5.md`](STRATEGY_V5.md) — research ranking + defaults  
+- [`STRATEGY_V4.md`](STRATEGY_V4.md) / [`STRATEGY_V3.md`](STRATEGY_V3.md) — prior iterations  
+
+## Stack
+
+- Paper trading from **$100 USDT**  
+- SQLite **`/data/history.db`** (Railway Volume)  
+- Telegram UI (`/status` `/stats` `/get_db` …)  
+- Live feed: Bybit / OKX / Binance PAXG / CCXT  
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # edit TELEGRAM_* if you want UI
+cp .env.example .env   # set TELEGRAM_* 
 python -m app.main
 ```
-
-Without a Telegram token the bot still runs and logs to stdout.
-
-## Railway 24/7
-
-1. Deploy this repo (Nixpacks / `python -m app.main`).
-2. **Volumes → Create Volume → Mount Path: `/data`**
-3. Set variables (see `.env.example`), especially:
-   - `DB_PATH=/data/history.db`
-   - `PAPER_TRADING=true`
-   - `PAPER_BALANCE=100.00`
-   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
-4. Message the bot: `/status`, `/get_db`
-
-Full guide: [`RAILWAY_DEPLOYMENT_GUIDE.md`](RAILWAY_DEPLOYMENT_GUIDE.md)  
-Strategy research: [`GOLD_DAY_TRADING_AUTOMATION_AND_STRATEGIES.md`](GOLD_DAY_TRADING_AUTOMATION_AND_STRATEGIES.md)
-
-## Telegram commands
-
-| Command | Action |
-|--------|--------|
-| `/status` | Mode, live price, DB path |
-| `/balance` | Paper equity & risk |
-| `/get_db` | Download `history.db` |
-| `/signals` | Last signals |
-| `/trades` | Open + closed trades |
-| `/stats` | Win rate, PF, PnL |
-| `/pause` `/resume` | Gate new entries |
-| `/close_all` | Flatten paper book |
-| `/force_long` `/force_short` | Test entry |
-
-## Architecture
-
-```
-app/
-  main.py          # asyncio worker (Railway)
-  engine.py        # 4-layer decision + ATR sizing
-  market_data.py   # live CCXT / Bybit / OKX / Binance
-  paper_trader.py  # SL/TP execution + balance updates
-  database.py      # history.db (signals, trades, account_history)
-  telegram_ui.py   # commands + push alerts
-  config.py        # env-driven settings
-```
-
-## Disclaimer
-
-Educational / research software. High leverage on gold can wipe capital. Paper trade first. Not financial advice.

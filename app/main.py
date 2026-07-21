@@ -111,14 +111,14 @@ async def main() -> None:
         paper_trader.new_entries_enabled = True
 
     await telegram_ui.send_message(
-        "🟢 <b>Gold Edge v4 Online 24/7</b>\n\n"
+        "🟢 <b>Gold Edge v5 Online 24/7</b>\n\n"
         f"• Strategy: <code>{config.STRATEGY_VERSION}</code>\n"
         f"• Env: <b>Railway ({config.ENV})</b>\n"
         f"• Balance: <b>${db.get_current_balance():.2f} USDT</b>\n"
         f"• Pair: <b>{config.SYMBOL}</b> · <b>{config.MAX_LEVERAGE}x</b>\n"
-        f"• Setups: EMA pullback · Asia/NY break · sweep\n"
-        f"• Risk {config.RISK_PER_TRADE_PCT}% · SL {config.SL_ATR_MULTIPLIER}×ATR · "
-        f"TP {config.TP_RR_RATIO:.1f}R · BE@{config.BE_TRIGGER_RR:.1f}R\n"
+        f"• Setup: Z-Score MR (range-only ADX≤{config.ADX_RANGE_MAX:.0f})\n"
+        f"• Z±{config.ZSCORE_ENTRY} · SL {config.SL_ATR_MULTIPLIER}×ATR · "
+        f"TP {config.TP_RR_RATIO:.1f}R · risk {config.RISK_PER_TRADE_PCT}%\n"
         f"• DB: <code>{db.db_path}</code>\n"
         "• /help · /status · /get_db · /stats"
     )

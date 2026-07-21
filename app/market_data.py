@@ -95,6 +95,10 @@ class LiveMarketDataFeed:
         adx, plus_di, minus_di = self.tech.calculate_adx(
             highs, lows, closes, config.ADX_PERIOD
         )
+        z_period = config.ZSCORE_PERIOD
+        sma_z = round(self.tech.calculate_sma(closes, z_period), 2)
+        stdev_z = round(self.tech.calculate_stdev(closes, z_period), 4)
+        zscore = round((latest_close - sma_z) / stdev_z, 3) if stdev_z > 1e-9 else 0.0
 
         atr_series = self.tech.atr_series(highs, lows, closes, config.ATR_PERIOD)
         look = config.ATR_AVG_LOOKBACK
@@ -178,6 +182,11 @@ class LiveMarketDataFeed:
             "ema_200": ema_200,
             "ema_50": ema_50,
             "ema_21": ema_21,
+            "sma_z": sma_z,
+            "sma_20": sma_z,
+            "stdev_z": stdev_z,
+            "stdev_20": stdev_z,
+            "zscore": zscore,
             "vwap": vwap,
             "adx": adx,
             "plus_di": plus_di,
@@ -372,15 +381,14 @@ class LiveMarketDataFeed:
         live = await loop.run_in_executor(None, self._fetch_live_market_data_sync)
         if live:
             logger.info(
-                "Live %s | $%.2f | spr $%.2f | ATR $%.2f | ADX %.1f | RSI %.1f | Asia %s/%s",
+                "Live %s | $%.2f | spr $%.2f | ATR $%.2f | ADX %.1f | Z %.2f | RSI %.1f",
                 live["source"],
                 live["close"],
                 live["spread"],
                 live["atr_14"],
                 live["adx"],
+                live.get("zscore", 0.0),
                 live["rsi_14"],
-                live["asian_high"],
-                live["asian_low"],
             )
             return live
         self.consecutive_failures += 1
