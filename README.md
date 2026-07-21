@@ -1,14 +1,13 @@
-# Gold-Scalp — Gold Edge v3 (XAU-USDT)
+# Gold-Scalp — Gold Edge v4 (XAU-USDT)
 
-24/7 gold day-trading engine for **XAU-USDT** with research-backed **v3** logic:
+24/7 gold day-trading engine for **XAU-USDT** — **v4 overhaul** after real-history backtest:
 
-- **Multi-setup stack:** Asia sweep-fade · Asia breakout · NY ORB  
-- **ADX regime split** · cost gate · turn confirm · true Asia clock  
-- **Exits:** BE @ 1R → ATR trail → runner TP @ 4R (no early partial that caps winners)  
-- **Paper trading** from **$100 USDT** (Apex live later)  
-- **SQLite** at **`/data/history.db`** + **Telegram** UI  
+- **Primary setup:** EMA21 pullback in trend (London 08–11 UTC)  
+- **Exits:** TP **2.0R** · BE only after **1.5R** · trail **off** (v3 BE@1R was the killer)  
+- Noise setups (naked Asia break / NY ORB / sweep) **off by default**  
+- **Paper trading** from **$100 USDT** · SQLite **`/data/history.db`** · **Telegram** UI  
 
-Full spec: [`STRATEGY_V3.md`](STRATEGY_V3.md)
+Specs: [`STRATEGY_V4.md`](STRATEGY_V4.md) · prior research: [`STRATEGY_V3.md`](STRATEGY_V3.md)
 
 ## Quick start (local)
 

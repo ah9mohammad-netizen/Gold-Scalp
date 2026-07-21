@@ -1,13 +1,12 @@
 """
-Paper Trading Engine — Gold Edge v3.
+Paper Trading Engine — Gold Edge v4.
 
-Exit model (research-backed):
+Exit model (fixed after v3 failure):
   • Hard SL always
-  • At BE_TRIGGER_R → move SL to breakeven (do NOT full-close / cap winners)
-  • Trail SL by TRAIL_ATR after BE
-  • Full close only at runner TP (large R) or SL / manual
-
-Also: daily loss lock, max trades/day, post-exit cooldown.
+  • Full close at primary TP (default 2.0R) — main profit path
+  • BE arm only after BE_TRIGGER_RR (default 1.5R) — NOT at 1.0R
+  • Loose ATR trail only after BE (optional)
+  • Longer cooldown after losses
 """
 from __future__ import annotations
 
@@ -32,7 +31,7 @@ class PaperTradingEngine:
         self.last_tick_at: Optional[datetime] = None
         self._entries_blocked_until: Optional[datetime] = None
         self._entry_cooldown_seconds: float = float(config.ENTRY_COOLDOWN_SECONDS)
-        # In-memory BE / trail state keyed by trade_id
+        self._loss_cooldown_seconds: float = float(config.LOSS_COOLDOWN_SECONDS)
         self._be_armed: Set[int] = set()
         self._restore_state()
 
@@ -74,10 +73,9 @@ class PaperTradingEngine:
             return 0.0
         return round((pnl_usd / margin) * 100.0, 2)
 
-    def _arm_entry_cooldown(self) -> None:
-        self._entries_blocked_until = datetime.now(timezone.utc) + timedelta(
-            seconds=self._entry_cooldown_seconds
-        )
+    def _arm_entry_cooldown(self, seconds: Optional[float] = None) -> None:
+        sec = self._entry_cooldown_seconds if seconds is None else seconds
+        self._entries_blocked_until = datetime.now(timezone.utc) + timedelta(seconds=sec)
 
     def _trades_opened_today(self) -> int:
         return db.count_trades_opened_today()
@@ -94,53 +92,47 @@ class PaperTradingEngine:
             direction = trade["direction"]
             entry = float(trade["entry_price"])
             sl = float(trade["sl_price"])
-            be_level = float(trade["tp1_price"])  # soft BE trigger
-            tp_runner = float(trade["tp2_price"])  # hard full TP
+            be_level = float(trade["tp1_price"])  # BE arm level (1.5R)
+            tp_primary = float(trade["tp2_price"])  # full TP (2.0R)
             size_oz = float(trade["size_oz"])
             leverage = int(trade["leverage"] or config.MAX_LEVERAGE)
-            sl_dist = abs(entry - float(trade.get("sl_price") or entry))
-            # Prefer original distance from entry vs initial SL side
-            if direction == "LONG":
-                initial_risk = max(entry - sl, 0.01) if trade_id not in self._be_armed else max(
-                    abs(entry - be_level) / max(config.BE_TRIGGER_RR, 0.1), 0.01
-                )
-            else:
-                initial_risk = max(sl - entry, 0.01) if trade_id not in self._be_armed else max(
-                    abs(entry - be_level) / max(config.BE_TRIGGER_RR, 0.1), 0.01
-                )
-            # Use stored distance if we can infer from entry and original tp1
+
             risk_unit = abs(be_level - entry) / max(config.BE_TRIGGER_RR, 0.01)
             if risk_unit <= 0:
-                risk_unit = max(sl_dist, 1.0)
+                risk_unit = max(abs(entry - sl), 1.0)
 
             exit_price: Optional[float] = None
             exit_reason: Optional[str] = None
 
             if direction == "LONG":
-                # 1) Hard SL
+                # Priority: SL first, then primary TP (take the win!)
                 if current_low <= sl:
                     exit_price, exit_reason = sl, (
-                        "BE_STOP" if trade_id in self._be_armed and sl >= entry else "SL_HIT"
+                        "BE_STOP" if trade_id in self._be_armed and sl >= entry - 1e-9 else "SL_HIT"
                     )
-                # 2) Runner TP full close
-                elif current_high >= tp_runner:
-                    exit_price, exit_reason = tp_runner, "TP_HIT"
+                elif current_high >= tp_primary:
+                    exit_price, exit_reason = tp_primary, "TP_HIT"
                 else:
-                    # 3) Arm breakeven at BE trigger (do not close)
+                    # Arm BE only after 1.5R (not 1.0)
                     if trade_id not in self._be_armed and current_high >= be_level:
-                        new_sl = round(entry, 2)  # pure BE
+                        new_sl = round(entry, 2)
                         db.update_trade_sl(trade_id, new_sl)
                         self._be_armed.add(trade_id)
                         self.emit_alert(
                             f"🔒 <b>BE ARMED #{trade_id}</b> LONG @ ${entry:.2f}\n"
-                            f"SL moved to breakeven ${new_sl:.2f} | runner TP ${tp_runner:.2f}"
+                            f"SL → BE ${new_sl:.2f} | primary TP ${tp_primary:.2f} "
+                            f"({config.TP_RR_RATIO:.1f}R)"
                         )
                         sl = new_sl
-                    # 4) Trail after BE
-                    if trade_id in self._be_armed:
-                        trail_dist = max(atr * config.TRAIL_ATR_MULTIPLIER, risk_unit * 0.5)
+                    # Loose trail after BE only
+                    if (
+                        config.ENABLE_TRAIL
+                        and trade_id in self._be_armed
+                    ):
+                        trail_dist = max(
+                            atr * config.TRAIL_ATR_MULTIPLIER, risk_unit * 0.8
+                        )
                         trail_sl = round(current_price - trail_dist, 2)
-                        # Never trail below BE
                         trail_sl = max(trail_sl, entry)
                         if trail_sl > sl:
                             db.update_trade_sl(trade_id, trail_sl)
@@ -149,10 +141,10 @@ class PaperTradingEngine:
             elif direction == "SHORT":
                 if current_high >= sl:
                     exit_price, exit_reason = sl, (
-                        "BE_STOP" if trade_id in self._be_armed and sl <= entry else "SL_HIT"
+                        "BE_STOP" if trade_id in self._be_armed and sl <= entry + 1e-9 else "SL_HIT"
                     )
-                elif current_low <= tp_runner:
-                    exit_price, exit_reason = tp_runner, "TP_HIT"
+                elif current_low <= tp_primary:
+                    exit_price, exit_reason = tp_primary, "TP_HIT"
                 else:
                     if trade_id not in self._be_armed and current_low <= be_level:
                         new_sl = round(entry, 2)
@@ -160,11 +152,14 @@ class PaperTradingEngine:
                         self._be_armed.add(trade_id)
                         self.emit_alert(
                             f"🔒 <b>BE ARMED #{trade_id}</b> SHORT @ ${entry:.2f}\n"
-                            f"SL moved to breakeven ${new_sl:.2f} | runner TP ${tp_runner:.2f}"
+                            f"SL → BE ${new_sl:.2f} | primary TP ${tp_primary:.2f} "
+                            f"({config.TP_RR_RATIO:.1f}R)"
                         )
                         sl = new_sl
-                    if trade_id in self._be_armed:
-                        trail_dist = max(atr * config.TRAIL_ATR_MULTIPLIER, risk_unit * 0.5)
+                    if config.ENABLE_TRAIL and trade_id in self._be_armed:
+                        trail_dist = max(
+                            atr * config.TRAIL_ATR_MULTIPLIER, risk_unit * 0.8
+                        )
                         trail_sl = round(current_price + trail_dist, 2)
                         trail_sl = min(trail_sl, entry)
                         if trail_sl < sl:
@@ -179,7 +174,11 @@ class PaperTradingEngine:
                 pnl_pct = self._pnl_pct(pnl_usd, entry, size_oz, leverage)
                 db.close_trade(trade_id, exit_price, pnl_usd, pnl_pct, exit_reason)
                 self._be_armed.discard(trade_id)
-                self._arm_entry_cooldown()
+                # Longer pause after losses
+                if pnl_usd < 0:
+                    self._arm_entry_cooldown(self._loss_cooldown_seconds)
+                else:
+                    self._arm_entry_cooldown()
                 self._emit_close_alert(
                     trade_id,
                     trade["symbol"],
@@ -206,7 +205,7 @@ class PaperTradingEngine:
         icons = {
             "SL_HIT": ("🔴", "SL HIT"),
             "BE_STOP": ("🟡", "BE STOP"),
-            "TP_HIT": ("🎉", "RUNNER TP HIT"),
+            "TP_HIT": ("🎉", "TP HIT"),
             "TP1_HIT": ("🎯", "TP1 HIT"),
             "TP2_HIT": ("🎉", "TP2 HIT"),
             "MANUAL_CLOSE": ("⚪", "MANUAL CLOSE"),
@@ -280,9 +279,10 @@ class PaperTradingEngine:
             f"Setup: <b>{setup}</b> | <b>{plan['direction']}</b> {plan['symbol']}\n"
             f"Entry: <b>${plan['entry_price']:.2f}</b>\n"
             f"SL: <b>${plan['sl_price']:.2f}</b> (−${plan['sl_distance']:.2f})\n"
-            f"BE trigger: <b>${plan['tp1_price']:.2f}</b> ({config.BE_TRIGGER_RR:.1f}R)\n"
-            f"Runner TP: <b>${plan['tp2_price']:.2f}</b> ({config.TP_RR_RATIO:.1f}R)\n"
-            f"Trail: <b>{config.TRAIL_ATR_MULTIPLIER:.1f}×ATR</b> after BE\n"
+            f"BE arm: <b>${plan['tp1_price']:.2f}</b> ({config.BE_TRIGGER_RR:.1f}R)\n"
+            f"Take Profit: <b>${plan['tp2_price']:.2f}</b> ({config.TP_RR_RATIO:.1f}R)\n"
+            f"Trail after BE: <b>{'ON' if config.ENABLE_TRAIL else 'OFF'}</b> "
+            f"({config.TRAIL_ATR_MULTIPLIER:.1f}×ATR)\n"
             f"Size: <b>{plan['size_oz']} oz</b> | Margin "
             f"<b>${plan['required_margin_usd']:.2f}</b> ({plan['leverage']}x)\n"
             f"Risk: <b>${plan['dollar_risk']:.2f}</b>\n"

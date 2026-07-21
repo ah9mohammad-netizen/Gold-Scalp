@@ -1,16 +1,22 @@
 """
-Gold Edge v3 — Research-Backed Layered Decision Engine for XAU-USDT.
+Gold Edge v4 — Decision Engine (post-backtest overhaul).
 
-Layers
-  1. Regime & session     — UTC kill windows, spread, daily book guards (caller)
-  2. Volatility & cost    — ATR band, min ATR, SL distance vs round-trip cost
-  3. Trend / ADX regime   — EMA200 + EMA50 + ADX range vs trend split
-  4. Structure            — Asia sweep-fade | Asia breakout | NY ORB
-  5. Confirmation         — turn bar, RSI anti-chase, close-beyond, DI spread
-  6. Risk & sizing        — ATR SL, runner TP (large R), % equity size, margin cap
+Lessons from v3 on real 5m history (PF 0.49):
+  • Early BE @ 1R destroyed expectancy
+  • 4R almost never filled
+  • Naked Asia breakouts were noise
 
-Sources absorbed: session ORB guides, Hermes NY ORB+5R, N30 ADX/cost/turn,
-ICT time/liquidity ideas (session + sweep), prop risk caps. No grid/martingale.
+v4 stack:
+  L1 Session + spread
+  L2 Vol + cost gate
+  L3 Trend regime (EMA stack + ADX)
+  L4 Structure (priority):
+       EMA_PULLBACK  — trend pullback to EMA21 (primary)
+       NY_ORB        — close beyond NY range + stack
+       ASIA_BREAKOUT — close beyond Asia + buffer + stack (strict)
+       ASIA_SWEEP    — range fade with larger pierce
+  L5 Momentum confirm (RSI band, impulse bar)
+  L6 Risk: SL 1.8×ATR, TP 2.0R, BE only after 1.5R
 """
 from __future__ import annotations
 
@@ -61,7 +67,6 @@ class TechnicalIndicators:
     def atr_series(
         highs: List[float], lows: List[float], closes: List[float], period: int = 14
     ) -> List[float]:
-        """Wilder ATR value at each bar (aligned to closes; leading zeros skipped)."""
         if len(closes) < period + 1:
             return []
         trs: List[float] = []
@@ -107,9 +112,6 @@ class TechnicalIndicators:
         closes: List[float],
         period: int = 14,
     ) -> Tuple[float, float, float]:
-        """
-        Returns (ADX, +DI, -DI). Classic Wilder implementation.
-        """
         n = len(closes)
         if n < period + 2:
             return 20.0, 20.0, 20.0
@@ -167,12 +169,9 @@ class TechnicalIndicators:
 
 
 class LayeredDecisionEngine:
-    """Gold Edge v3 multi-setup engine."""
-
     def __init__(self) -> None:
         self.tech = TechnicalIndicators()
 
-    # ------------------------------------------------------------------
     def evaluate(
         self, market_data: Dict[str, Any], account_balance: float
     ) -> Optional[Dict[str, Any]]:
@@ -189,12 +188,14 @@ class LayeredDecisionEngine:
         price = float(market_data["close"])
         high = float(market_data.get("high", price))
         low = float(market_data.get("low", price))
+        open_px = float(market_data.get("open", price))
         spread = float(market_data.get("spread", 0.15))
         atr = float(market_data.get("atr_14", 1.8))
         atr_avg = float(market_data.get("atr_avg", atr))
         rsi = float(market_data.get("rsi_14", 50.0))
         ema_200 = float(market_data.get("ema_200", price))
         ema_50 = float(market_data.get("ema_50", price))
+        ema_21 = float(market_data.get("ema_21", market_data.get("ema_50", price)))
         vwap = float(market_data.get("vwap", price))
         adx = float(market_data.get("adx", 20.0))
         plus_di = float(market_data.get("plus_di", 20.0))
@@ -207,151 +208,137 @@ class LayeredDecisionEngine:
         ny_ready = bool(market_data.get("ny_orb_ready", False))
         prev_close = float(market_data.get("prev_close", price))
         prev_close_2 = float(market_data.get("prev_close_2", prev_close))
+        prev_high = float(market_data.get("prev_high", high))
+        prev_low = float(market_data.get("prev_low", low))
 
         utc_hour = current_time.astimezone(timezone.utc).hour
+        body = abs(price - open_px)
+        bullish_bar = price > open_px
+        bearish_bar = price < open_px
 
-        # =============================================================
-        # LAYER 1 — REGIME & SESSION
-        # =============================================================
-        session_ok = any(
-            s <= utc_hour < e for s, e in config.ALLOWED_SESSIONS
-        )
-        # NY ORB decision hour is allowed even if slightly outside 12-16 end
+        # =========================================================
+        # L1 — SESSION
+        # =========================================================
+        session_ok = any(s <= utc_hour < e for s, e in config.ALLOWED_SESSIONS)
         if config.ENABLE_NY_ORB and utc_hour == config.NY_ORB_DECISION_HOUR_UTC:
             session_ok = True
-
         if not session_ok and not force:
-            logger.debug("L1 skip: outside session h=%02d UTC", utc_hour)
             return None
-
         if spread > config.MAX_ALLOWABLE_SPREAD_USD and not force:
-            logger.warning(
-                "L1 skip: spread $%.2f > $%.2f", spread, config.MAX_ALLOWABLE_SPREAD_USD
-            )
             return None
 
-        # =============================================================
-        # LAYER 2 — VOLATILITY & COST GATE
-        # =============================================================
+        # =========================================================
+        # L2 — VOL + COST
+        # =========================================================
         if atr < config.MIN_ATR_USD and not force:
-            logger.debug("L2 skip: ATR $%.2f < min $%.2f", atr, config.MIN_ATR_USD)
             return None
-
         if atr_avg > 0 and not force:
             ratio = atr / atr_avg
             if ratio < config.ATR_VS_AVG_MIN or ratio > config.ATR_VS_AVG_MAX:
-                logger.debug("L2 skip: ATR/avg ratio %.2f out of band", ratio)
                 return None
 
         sl_distance = max(config.MIN_SL_USD, round(atr * config.SL_ATR_MULTIPLIER, 2))
         rt_cost = max(spread * 2.0, config.ROUND_TRIP_COST_USD)
         if not force:
             if sl_distance < rt_cost * config.MIN_SL_COST_MULTIPLE:
-                logger.debug(
-                    "L2 skip: SL $%.2f < %.1fx cost $%.2f",
-                    sl_distance,
-                    config.MIN_SL_COST_MULTIPLE,
-                    rt_cost,
-                )
                 return None
-            tp_dist = sl_distance * config.TP_RR_RATIO
-            if tp_dist < rt_cost * config.MIN_TP_COST_MULTIPLE:
-                logger.debug("L2 skip: TP distance fails cost multiple")
+            if sl_distance * config.TP_RR_RATIO < rt_cost * config.MIN_TP_COST_MULTIPLE:
                 return None
 
-        # =============================================================
-        # LAYER 3 — TREND / ADX REGIME
-        # =============================================================
-        trend_bull = price > ema_200
-        trend_bear = price < ema_200
-        swing_bull = price > ema_50
-        swing_bear = price < ema_50
+        # =========================================================
+        # L3 — TREND / STACK
+        # =========================================================
+        stack_bull = price > ema_21 > ema_50 > ema_200
+        stack_bear = price < ema_21 < ema_50 < ema_200
+        soft_bull = price > ema_50 > ema_200
+        soft_bear = price < ema_50 < ema_200
+        if not config.REQUIRE_EMA_STACK:
+            stack_bull = soft_bull
+            stack_bear = soft_bear
+
         di_spread = abs(plus_di - minus_di)
         is_ranging = adx <= config.ADX_RANGE_MAX
         is_trending = adx >= config.ADX_TREND_MIN
 
-        # =============================================================
-        # LAYER 4 — STRUCTURE (multi-setup, first match wins by priority)
-        # Priority: NY ORB (timed) > Asia sweep-fade > Asia breakout
-        # =============================================================
         bias: Optional[str] = None
         setup_name = ""
         layer4_reason = ""
-
         asian_range = max(0.0, asian_high - asian_low)
+        buf = config.BREAKOUT_BUFFER_USD
 
-        # --- Setup A: NY Opening Range Breakout (Hermes DNA) ---
+        # --- Setup A: EMA pullback continuation (PRIMARY) ---
+        if (
+            not bias
+            and config.ENABLE_EMA_PULLBACK
+            and not force
+            and is_trending
+            and di_spread >= config.MIN_DI_SPREAD
+        ):
+            # Long: bull stack, pullback touched EMA21 zone, bounce bar
+            near_ema = abs(low - ema_21) <= atr * 0.6 or abs(price - ema_21) <= atr * 0.5
+            if (
+                stack_bull
+                and near_ema
+                and bullish_bar
+                and price > ema_21
+                and prev_close <= prev_close_2  # prior bar was pullback-ish
+                and plus_di > minus_di
+                and 40 <= rsi <= config.RSI_OVERBOUGHT
+            ):
+                bias = "LONG"
+                setup_name = "EMA_PULLBACK"
+                layer4_reason = (
+                    f"Bull stack pullback to EMA21 ${ema_21:.2f} | ADX {adx:.1f}"
+                )
+            near_ema_s = abs(high - ema_21) <= atr * 0.6 or abs(price - ema_21) <= atr * 0.5
+            if (
+                not bias
+                and stack_bear
+                and near_ema_s
+                and bearish_bar
+                and price < ema_21
+                and prev_close >= prev_close_2
+                and minus_di > plus_di
+                and config.RSI_OVERSOLD <= rsi <= 60
+            ):
+                bias = "SHORT"
+                setup_name = "EMA_PULLBACK"
+                layer4_reason = (
+                    f"Bear stack pullback to EMA21 ${ema_21:.2f} | ADX {adx:.1f}"
+                )
+
+        # --- Setup B: NY ORB (close beyond + stack) ---
         if (
             not bias
             and config.ENABLE_NY_ORB
             and not force
             and ny_ready
             and ny_high > 0
-            and ny_low > 0
-            and utc_hour >= config.NY_ORB_DECISION_HOUR_UTC
             and is_trending
+            and utc_hour >= config.NY_ORB_DECISION_HOUR_UTC
         ):
             if (
-                price > ny_high
-                and (not config.REQUIRE_CLOSE_BEYOND or price > ny_high)
-                and swing_bull
-                and trend_bull
+                price > ny_high + buf
+                and stack_bull
+                and bullish_bar
                 and plus_di > minus_di
                 and di_spread >= config.MIN_DI_SPREAD
             ):
                 bias = "LONG"
                 setup_name = "NY_ORB_BREAKOUT"
-                layer4_reason = (
-                    f"NY ORB break ↑ ${ny_high:.2f} | EMA50/200 bull | ADX {adx:.1f}"
-                )
+                layer4_reason = f"NY ORB close ↑ ${ny_high:.2f}+buf | stack bull | ADX {adx:.1f}"
             elif (
-                price < ny_low
-                and swing_bear
-                and trend_bear
+                price < ny_low - buf
+                and stack_bear
+                and bearish_bar
                 and minus_di > plus_di
                 and di_spread >= config.MIN_DI_SPREAD
             ):
                 bias = "SHORT"
                 setup_name = "NY_ORB_BREAKOUT"
-                layer4_reason = (
-                    f"NY ORB break ↓ ${ny_low:.2f} | EMA50/200 bear | ADX {adx:.1f}"
-                )
+                layer4_reason = f"NY ORB close ↓ ${ny_low:.2f}-buf | stack bear | ADX {adx:.1f}"
 
-        # --- Setup B: Asian liquidity sweep + rejection (ICT / Asia fade) ---
-        if (
-            not bias
-            and config.ENABLE_SWEEP_FADE
-            and not force
-            and asian_ready
-            and config.MIN_ASIAN_RANGE_USD <= asian_range <= config.MAX_ASIAN_RANGE_USD
-            and is_ranging  # fade only in range regime (N30)
-        ):
-            pierce = config.SWEEP_MIN_PIERCE_USD
-            # High sweep then close back inside → short
-            if (
-                high >= asian_high + pierce
-                and price < asian_high
-                and trend_bear
-            ):
-                bias = "SHORT"
-                setup_name = "ASIA_SWEEP_FADE"
-                layer4_reason = (
-                    f"Asia high sweep ${high:.2f}≥${asian_high:.2f}+{pierce} "
-                    f"reject close ${price:.2f} | ADX {adx:.1f} range"
-                )
-            elif (
-                low <= asian_low - pierce
-                and price > asian_low
-                and trend_bull
-            ):
-                bias = "LONG"
-                setup_name = "ASIA_SWEEP_FADE"
-                layer4_reason = (
-                    f"Asia low sweep ${low:.2f}≤${asian_low:.2f}-{pierce} "
-                    f"reject close ${price:.2f} | ADX {adx:.1f} range"
-                )
-
-        # --- Setup C: Asia range breakout + VWAP (session breakout guides) ---
+        # --- Setup C: Asia breakout (STRICT — close beyond + buffer + stack) ---
         if (
             not bias
             and config.ENABLE_ASIA_BREAKOUT
@@ -359,98 +346,109 @@ class LayeredDecisionEngine:
             and asian_ready
             and config.MIN_ASIAN_RANGE_USD <= asian_range <= config.MAX_ASIAN_RANGE_USD
             and is_trending
+            and adx >= config.ADX_TREND_MIN
         ):
             if (
-                price > asian_high
+                price > asian_high + buf
                 and price > vwap
-                and trend_bull
-                and swing_bull
+                and stack_bull
+                and bullish_bar
+                and body >= atr * 0.25
                 and plus_di > minus_di
                 and di_spread >= config.MIN_DI_SPREAD
             ):
-                # Prefer close-beyond confirmation
-                if (not config.REQUIRE_CLOSE_BEYOND) or (price > asian_high):
-                    bias = "LONG"
-                    setup_name = "ASIA_BREAKOUT"
-                    layer4_reason = (
-                        f"Asia breakout ↑ ${asian_high:.2f} + VWAP ${vwap:.2f} "
-                        f"| ADX {adx:.1f} trend"
-                    )
+                bias = "LONG"
+                setup_name = "ASIA_BREAKOUT"
+                layer4_reason = (
+                    f"Asia close-beyond ↑ ${asian_high:.2f}+{buf} | body ok | ADX {adx:.1f}"
+                )
             elif (
-                price < asian_low
+                price < asian_low - buf
                 and price < vwap
-                and trend_bear
-                and swing_bear
+                and stack_bear
+                and bearish_bar
+                and body >= atr * 0.25
                 and minus_di > plus_di
                 and di_spread >= config.MIN_DI_SPREAD
             ):
                 bias = "SHORT"
                 setup_name = "ASIA_BREAKOUT"
                 layer4_reason = (
-                    f"Asia breakdown ↓ ${asian_low:.2f} + VWAP ${vwap:.2f} "
-                    f"| ADX {adx:.1f} trend"
+                    f"Asia close-beyond ↓ ${asian_low:.2f}-{buf} | body ok | ADX {adx:.1f}"
                 )
 
-        # --- Manual / Telegram force ---
+        # --- Setup D: Asia sweep fade (range only, larger pierce) ---
+        if (
+            not bias
+            and config.ENABLE_SWEEP_FADE
+            and not force
+            and asian_ready
+            and config.MIN_ASIAN_RANGE_USD <= asian_range <= config.MAX_ASIAN_RANGE_USD
+            and is_ranging
+        ):
+            pierce = config.SWEEP_MIN_PIERCE_USD
+            if (
+                high >= asian_high + pierce
+                and price < asian_high
+                and price < ema_50
+                and bearish_bar
+                and prev_close <= prev_close_2
+            ):
+                bias = "SHORT"
+                setup_name = "ASIA_SWEEP_FADE"
+                layer4_reason = (
+                    f"Asia high sweep+reject ${high:.2f}≥${asian_high:.2f}+{pierce} | range ADX {adx:.1f}"
+                )
+            elif (
+                low <= asian_low - pierce
+                and price > asian_low
+                and price > ema_50
+                and bullish_bar
+                and prev_close >= prev_close_2
+            ):
+                bias = "LONG"
+                setup_name = "ASIA_SWEEP_FADE"
+                layer4_reason = (
+                    f"Asia low sweep+reject ${low:.2f}≤${asian_low:.2f}-{pierce} | range ADX {adx:.1f}"
+                )
+
         if not bias and force:
             bias = str(market_data.get("force_direction", "LONG")).upper()
             setup_name = "FORCE_OVERRIDE"
-            layer4_reason = "Telegram / manual force signal"
-            is_trending = True
-            is_ranging = True
+            layer4_reason = "Telegram / manual force"
 
         if not bias:
             return None
 
-        # =============================================================
-        # LAYER 5 — CONFIRMATION
-        # =============================================================
+        # =========================================================
+        # L5 — EXTRA CONFIRM (non-force)
+        # =========================================================
         if not force:
-            # Turn confirmation (N30): bar stopped extending against intended fade
-            # or for breakouts, last close continues in direction
-            if config.REQUIRE_TURN_CONFIRM:
-                if setup_name == "ASIA_SWEEP_FADE":
-                    if bias == "SHORT" and not (prev_close <= prev_close_2):
-                        logger.debug("L5 skip: no turn confirm for SHORT fade")
-                        return None
-                    if bias == "LONG" and not (prev_close >= prev_close_2):
-                        logger.debug("L5 skip: no turn confirm for LONG fade")
-                        return None
-                elif setup_name in ("ASIA_BREAKOUT", "NY_ORB_BREAKOUT"):
-                    if bias == "LONG" and prev_close < prev_close_2:
-                        logger.debug("L5 skip: breakout long lacks momentum bar")
-                        return None
-                    if bias == "SHORT" and prev_close > prev_close_2:
-                        logger.debug("L5 skip: breakout short lacks momentum bar")
-                        return None
-
-            # RSI anti-chase
             if bias == "LONG" and rsi > config.RSI_OVERBOUGHT:
-                logger.debug("L5 skip: RSI %.1f overbought", rsi)
                 return None
             if bias == "SHORT" and rsi < config.RSI_OVERSOLD:
-                logger.debug("L5 skip: RSI %.1f oversold", rsi)
+                return None
+            # Impulse: current bar should not be a tiny doji
+            if body < atr * 0.12 and setup_name != "EMA_PULLBACK":
                 return None
 
-        # =============================================================
-        # LAYER 6 — RISK, EXITS, SIZING
-        # =============================================================
+        # =========================================================
+        # L6 — RISK / EXITS
+        # =========================================================
         be_distance = round(sl_distance * config.BE_TRIGGER_RR, 2)
         tp_distance = round(sl_distance * config.TP_RR_RATIO, 2)
 
         if bias == "LONG":
             sl_price = round(price - sl_distance, 2)
-            # tp1_price used as BE trigger level (soft)
-            tp1_price = round(price + be_distance, 2)
-            tp2_price = round(price + tp_distance, 2)
+            tp1_price = round(price + be_distance, 2)  # BE arm level only
+            tp2_price = round(price + tp_distance, 2)  # full TP
         else:
             sl_price = round(price + sl_distance, 2)
             tp1_price = round(price - be_distance, 2)
             tp2_price = round(price - tp_distance, 2)
 
         dollar_risk = account_balance * (config.RISK_PER_TRADE_PCT / 100.0)
-        if dollar_risk < 0.50 and not force:
-            logger.warning("L6 skip: dollar risk too small ($%.2f)", dollar_risk)
+        if dollar_risk < 0.40 and not force:
             return None
 
         size_oz = round(dollar_risk / sl_distance, 4)
@@ -463,10 +461,8 @@ class LayeredDecisionEngine:
         if required_margin > cap:
             size_oz = round((cap * config.MAX_LEVERAGE) / price, 4)
             if size_oz < 0.01:
-                logger.warning("L6 skip: cannot size under margin cap")
                 return None
             required_margin = round((price * size_oz) / config.MAX_LEVERAGE, 2)
-            dollar_risk = round(size_oz * sl_distance, 2)
 
         ts = current_time.isoformat()
         regime_txt = (
@@ -474,8 +470,8 @@ class LayeredDecisionEngine:
             f"{'TREND' if is_trending else ('RANGE' if is_ranging else 'MID')}"
         )
         mom_txt = (
-            f"ATR=${atr:.2f} (avg ${atr_avg:.2f}) RSI={rsi:.1f} "
-            f"DI+={plus_di:.1f} DI-={minus_di:.1f} cost=${rt_cost:.2f}"
+            f"ATR=${atr:.2f} RSI={rsi:.1f} DI+={plus_di:.1f} DI-={minus_di:.1f} "
+            f"EMA21={ema_21:.1f} stack={'Y' if (stack_bull or stack_bear) else 'N'}"
         )
 
         plan: Dict[str, Any] = {
@@ -484,8 +480,8 @@ class LayeredDecisionEngine:
             "direction": bias,
             "entry_price": round(price, 2),
             "sl_price": sl_price,
-            "tp1_price": tp1_price,  # BE trigger level
-            "tp2_price": tp2_price,  # hard runner TP
+            "tp1_price": tp1_price,
+            "tp2_price": tp2_price,
             "size_oz": size_oz,
             "leverage": config.MAX_LEVERAGE,
             "required_margin_usd": required_margin,
@@ -505,7 +501,7 @@ class LayeredDecisionEngine:
         }
 
         logger.info(
-            "✨ %s %s @ $%.2f | SL $%.2f | BE@$%.2f | TP $%.2f (%.1fR) | %.4f oz",
+            "✨ v4 %s %s @ $%.2f | SL $%.2f | BE@$%.2f | TP $%.2f (%.1fR) | %.4f oz",
             setup_name,
             bias,
             price,

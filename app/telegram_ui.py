@@ -203,10 +203,10 @@ class TelegramUI:
 
         if cmd_lower in ("/start", "/help"):
             msg = (
-                "🪙 <b>XAU-USDT Gold Edge v3</b>\n"
+                "🪙 <b>XAU-USDT Gold Edge v4</b>\n"
                 f"<code>{config.STRATEGY_VERSION}</code>\n\n"
-                "Research stack: Asia sweep / Asia breakout / NY ORB\n"
-                "ADX regime · cost gate · BE+trail · runner TP · no grid\n"
+                "EMA pullback · strict Asia/NY break · sweep fade\n"
+                f"TP {config.TP_RR_RATIO:.1f}R · BE@{config.BE_TRIGGER_RR:.1f}R · risk {config.RISK_PER_TRADE_PCT}%\n"
                 "$100 paper · Railway 24/7\n\n"
                 "<b>Commands</b>\n"
                 "• /status — bot, price, strategy, DB\n"
@@ -255,7 +255,7 @@ class TelegramUI:
                 tick_age = f" ({int(age)}s ago)"
             lt = market_feed.last_tick or {}
             msg = (
-                "⚙️ <b>Gold Edge v3 Status</b>\n\n"
+                "⚙️ <b>Gold Edge v4 Status</b>\n\n"
                 f"• Strategy: <code>{config.STRATEGY_VERSION}</code>\n"
                 f"• Mode: <b>{'PAPER ($100)' if config.PAPER_TRADING else 'LIVE'}</b>\n"
                 f"• New entries: <b>{'🟢 ON' if paper_trader.new_entries_enabled else '🟡 PAUSED'}</b>\n"
@@ -396,24 +396,28 @@ class TelegramUI:
             dummy = {
                 "timestamp": datetime.now(timezone.utc),
                 "close": px,
+                "open": px - 0.5 if direction == "LONG" else px + 0.5,
                 "spread": float(base.get("spread", 0.15)),
                 "atr_14": float(base.get("atr_14", 2.40)),
                 "atr_avg": float(base.get("atr_avg", 2.0)),
                 "rsi_14": 55.0,
-                "ema_200": px - 15 if direction == "LONG" else px + 15,
-                "ema_50": px - 5 if direction == "LONG" else px + 5,
+                "ema_200": px - 20 if direction == "LONG" else px + 20,
+                "ema_50": px - 10 if direction == "LONG" else px + 10,
+                "ema_21": px - 5 if direction == "LONG" else px + 5,
                 "vwap": px - 3 if direction == "LONG" else px + 3,
-                "adx": 30.0,
-                "plus_di": 30.0 if direction == "LONG" else 10.0,
-                "minus_di": 10.0 if direction == "LONG" else 30.0,
+                "adx": 32.0,
+                "plus_di": 32.0 if direction == "LONG" else 10.0,
+                "minus_di": 10.0 if direction == "LONG" else 32.0,
                 "asian_high": px - 2 if direction == "LONG" else px + 5,
                 "asian_low": px - 12 if direction == "LONG" else px + 2,
                 "asian_range_ready": True,
                 "ny_orb_high": 0,
                 "ny_orb_low": 0,
                 "ny_orb_ready": False,
-                "prev_close": px,
-                "prev_close_2": px - 0.5 if direction == "LONG" else px + 0.5,
+                "prev_close": px - 0.3 if direction == "LONG" else px + 0.3,
+                "prev_close_2": px - 0.6 if direction == "LONG" else px + 0.6,
+                "prev_high": px + 0.2,
+                "prev_low": px - 0.2,
                 "high": px + 0.5,
                 "low": px - 0.5,
                 "force_signal": True,
@@ -421,7 +425,7 @@ class TelegramUI:
             }
             paper_trader.process_new_market_data(dummy)
             await self.send_message(
-                f"🧪 Forced <b>{direction}</b> test (v3) at live ${px:.2f}.",
+                f"🧪 Forced <b>{direction}</b> test (v4) at live ${px:.2f}.",
                 chat_id=chat_id,
             )
 

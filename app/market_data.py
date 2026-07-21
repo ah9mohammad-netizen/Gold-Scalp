@@ -81,11 +81,15 @@ class LiveMarketDataFeed:
         latest_close = float(closes[-1])
         latest_high = float(highs[-1])
         latest_low = float(lows[-1])
+        latest_open = float(opens[-1]) if opens else latest_close
         prev_close = float(closes[-2]) if len(closes) >= 2 else latest_close
         prev_close_2 = float(closes[-3]) if len(closes) >= 3 else prev_close
+        prev_high = float(highs[-2]) if len(highs) >= 2 else latest_high
+        prev_low = float(lows[-2]) if len(lows) >= 2 else latest_low
 
         ema_200 = round(self.tech.calculate_ema(closes, config.EMA_TREND_PERIOD), 2)
         ema_50 = round(self.tech.calculate_ema(closes, config.EMA_FAST_PERIOD), 2)
+        ema_21 = round(self.tech.calculate_ema(closes, config.EMA_PULLBACK_PERIOD), 2)
         atr_14 = round(self.tech.calculate_atr(highs, lows, closes, config.ATR_PERIOD), 2)
         rsi_14 = round(self.tech.calculate_rsi(closes, config.RSI_PERIOD), 1)
         adx, plus_di, minus_di = self.tech.calculate_adx(
@@ -164,7 +168,7 @@ class LiveMarketDataFeed:
             "timestamp": now,
             "source": source_name,
             "close": latest_close,
-            "open": float(opens[-1]) if opens else latest_close,
+            "open": latest_open,
             "high": latest_high,
             "low": latest_low,
             "spread": float(spread),
@@ -173,6 +177,7 @@ class LiveMarketDataFeed:
             "rsi_14": rsi_14,
             "ema_200": ema_200,
             "ema_50": ema_50,
+            "ema_21": ema_21,
             "vwap": vwap,
             "adx": adx,
             "plus_di": plus_di,
@@ -185,6 +190,8 @@ class LiveMarketDataFeed:
             "ny_orb_ready": ny_orb_ready,
             "prev_close": prev_close,
             "prev_close_2": prev_close_2,
+            "prev_high": prev_high,
+            "prev_low": prev_low,
         }
         self.last_known_price = latest_close
         self.last_valid_source = source_name
