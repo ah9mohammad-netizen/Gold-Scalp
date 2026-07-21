@@ -131,8 +131,19 @@ When deploying automated algorithms on `XAU-USDT` perpetual futures or `XAU/USD`
 
 ## 📂 Repository Implementation Structure
 
-To give you complete, production-ready blueprints right inside this repository (`Gold-Scalp`), we have implemented:
+Production stack in this repository (`Gold-Scalp`):
 
-1. `bots/python_xauusdt_layered_scalper.py`: An asynchronous Python/CCXT quantitative bot tailored for `XAU-USDT` crypto perps implementing our exact 4-Layer Decision Engine.
-2. `bots/pinescript_asian_sweep_london_breakout.pine`: A TradingView Pine Script v5 automated strategy with alert webhooks for the Asian Range Sweep & London Breakout.
-3. `bots/mql5_xauusd_layered_scalper.mq5`: A professional MQL5 Expert Advisor template featuring dynamic volatility filters, news safeguards, and ATR risk calculation.
+### Railway 24/7 paper engine (`app/`)
+1. `app/main.py` — asyncio worker (`python -m app.main`) for Railway
+2. `app/engine.py` — 4-Layer Decision Engine (session → structure → momentum → ATR risk)
+3. `app/market_data.py` — live XAU feed (Bybit / OKX / Binance PAXG / CCXT) — no synthetic prices
+4. `app/paper_trader.py` — $100 paper book, SL/TP1/TP2, balance updates
+5. `app/database.py` — SQLite **`/data/history.db`** (signals, trades, account_history)
+6. `app/telegram_ui.py` — Telegram UI + `/get_db` export of the Volume DB
+
+### Reference strategy blueprints (`bots/`)
+1. `bots/python_xauusdt_layered_scalper.py` — standalone 4-layer CCXT template
+2. `bots/pinescript_asian_sweep_london_breakout.pine` — TV Asian sweep / London breakout
+3. `bots/mql5_xauusd_layered_scalper.mq5` — MT5 EA template (ATR risk, session filter)
+
+See also: `RAILWAY_DEPLOYMENT_GUIDE.md`, `README.md`.
