@@ -27,6 +27,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [Impulse–pullback–reclaim discovery](XAU_IMPULSE_RECLAIM_DISCOVERY.md) — outcome labels reject the structural continuation premise before PnL optimisation
 - [XAU data-quality audit](XAU_DATA_QUALITY_AUDIT.md) — two critical multi-day holes mean all current strategy conclusions are provisional until repaired or gap-guarded
 - [Compressed-archive reconciliation](XAU_COMPRESSED_ARCHIVE_RECONCILIATION.md) — the 2004–2026 archive is valid but exactly preserves the recent missing windows
+- [XAUUSDc M3 assessment](XAUUSDC_M3_DATA_QUALITY_AUDIT.md) — M3 data cannot reconstruct M5 and contains stale/repeated-bar contamination
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 
