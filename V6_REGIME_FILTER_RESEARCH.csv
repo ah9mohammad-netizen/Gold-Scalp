@@ -1,0 +1,20 @@
+z_entry,adx_max,sl_atr,tp_r,session_start,session_end,require_turn,be_r,opposing_sma_slope_max_atr,max_signal_bar_range_atr,rejection_close_min,require_close_inside_prior20,max_relative_volume,label,window,trades,wins,losses,final_balance,net_pnl,return_pct,profit_factor,max_realized_dd,fees
+2.2,18.0,2.5,2.0,7,17,True,,,,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off,Development,15,3,12,86.7418,-13.2582,-13.2582,0.26855630384693147,16.5351,4.0989
+2.2,18.0,2.5,2.0,7,17,True,,0.25,,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|slope≤0.25,Development,8,1,7,89.7446,-10.2554,-10.2554,0.1491390333854111,12.053,2.2569
+2.2,18.0,2.5,2.0,7,17,True,,0.5,,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|slope≤0.5,Development,12,2,10,87.6281,-12.3719,-12.3719,0.21017562922560945,15.6641,3.2334
+2.2,18.0,2.5,2.0,7,17,True,,1.0,,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|slope≤1,Development,15,3,12,86.7418,-13.2582,-13.2582,0.26855630384693147,16.5351,4.0989
+2.2,18.0,2.5,2.0,7,17,True,,,1.25,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|bar≤1.25ATR,Development,14,3,11,88.8531,-11.1469,-11.1469,0.30553050155128897,14.4601,3.7739
+2.2,18.0,2.5,2.0,7,17,True,,,1.5,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|bar≤1.5ATR,Development,15,3,12,86.7418,-13.2582,-13.2582,0.26855630384693147,16.5351,4.0989
+2.2,18.0,2.5,2.0,7,17,True,,,2.0,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|bar≤2ATR,Development,15,3,12,86.7418,-13.2582,-13.2582,0.26855630384693147,16.5351,4.0989
+2.2,18.0,2.5,2.0,7,17,True,,,,0.6,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|CLV≥0.6,Development,5,1,4,95.9372,-4.0628,-4.0628,0.2904907660564953,4.3598,1.5204
+2.2,18.0,2.5,2.0,7,17,True,,,,0.7,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|CLV≥0.7,Development,3,0,3,95.6525,-4.3475,-4.3475,0.0,4.3475,0.901
+2.2,18.0,2.5,2.0,7,17,True,,,,,True,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|inside20,Development,15,3,12,86.7418,-13.2582,-13.2582,0.26855630384693147,16.5351,4.0989
+2.2,18.0,2.5,2.0,7,17,True,,,,,False,1.5,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|vol≤1.5x,Development,7,2,5,95.5149,-4.4851,-4.4851,0.43598871068802575,6.2826,2.0102
+2.2,18.0,2.5,2.0,7,17,True,,,,,False,2.0,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|vol≤2x,Development,11,2,9,89.9768,-10.0232,-10.0232,0.25407820939376186,11.8208,3.062
+2.2,18.0,2.5,2.0,7,17,True,,0.5,1.5,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|slope≤0.5+bar≤1.5ATR,Development,12,2,10,87.6281,-12.3719,-12.3719,0.21017562922560945,15.6641,3.2334
+2.2,18.0,2.5,2.0,7,17,True,,0.5,1.5,0.6,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|slope≤0.5+bar≤1.5ATR+CLV≥0.6,Development,3,0,3,95.624,-4.376,-4.376,0.0,4.376,0.8949
+2.2,18.0,2.5,2.0,7,17,True,,0.5,1.5,,True,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|slope≤0.5+bar≤1.5ATR+inside20,Development,12,2,10,87.6281,-12.3719,-12.3719,0.21017562922560945,15.6641,3.2334
+2.2,18.0,2.5,2.0,7,17,True,,,,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off,Baseline — Validation (2023-2024),9,6,3,105.3066,5.3066,5.3066,2.1308706393502708,2.9537,3.2763
+2.2,18.0,2.5,2.0,7,17,True,,,1.25,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|bar≤1.25ATR,Development-selected regime filter — Validation (2023-2024),4,3,1,103.4267,3.4267,3.4267,3.414164274892277,1.4194,1.5671
+2.2,18.0,2.5,2.0,7,17,True,,,,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off,Baseline — Holdout (2025 onward),20,9,11,94.2795,-5.7205,-5.7205,0.7038267733483373,6.5109,7.5661
+2.2,18.0,2.5,2.0,7,17,True,,,1.25,,False,,Z2.2|ADX≤18|SL2.5ATR|TP2R|07-17|turn|off|bar≤1.25ATR,Development-selected regime filter — Holdout (2025 onward),17,7,10,92.6645,-7.3355,-7.3355,0.5891994843622432,7.3355,6.4983

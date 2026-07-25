@@ -18,6 +18,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [Gold automation research and strategy decision memo](GOLD_AUTOMATION_RESEARCH_2026.md) — strategy families, venue facts, rejected approaches, research gates, and sources
 - [Cost-aware main-history backtest](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) — reproducible 443,451-bar run of the current baseline; negative net result means it remains paper-only
 - [Trade forensics & walk-forward parameter research](TRADE_FORENSICS_AND_OPTIMIZATION.md) — every baseline trade is audited and attempted parameter changes are rejected on unseen data
+- [Phase 2 regime-filter research](V6_REGIME_FILTER_RESEARCH.md) — slope, range, rejection, prior-range, and volume filters are tested and rejected on holdout data
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 

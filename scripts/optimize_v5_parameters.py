@@ -42,13 +42,31 @@ class Parameters:
     session_end: int = 17
     require_turn: bool = True
     be_r: Optional[float] = None
+    # v6 research-only state filters. All default to off, preserving v5.
+    opposing_sma_slope_max_atr: Optional[float] = None
+    max_signal_bar_range_atr: Optional[float] = None
+    rejection_close_min: Optional[float] = None
+    require_close_inside_prior20: bool = False
+    max_relative_volume: Optional[float] = None
 
     def label(self) -> str:
         turn = "turn" if self.require_turn else "no-turn"
         be = "off" if self.be_r is None else f"BE{self.be_r:g}R"
+        filters = []
+        if self.opposing_sma_slope_max_atr is not None:
+            filters.append(f"slope≤{self.opposing_sma_slope_max_atr:g}")
+        if self.max_signal_bar_range_atr is not None:
+            filters.append(f"bar≤{self.max_signal_bar_range_atr:g}ATR")
+        if self.rejection_close_min is not None:
+            filters.append(f"CLV≥{self.rejection_close_min:g}")
+        if self.require_close_inside_prior20:
+            filters.append("inside20")
+        if self.max_relative_volume is not None:
+            filters.append(f"vol≤{self.max_relative_volume:g}x")
+        filter_label = "|" + "+".join(filters) if filters else ""
         return (
             f"Z{self.z_entry:g}|ADX≤{self.adx_max:g}|SL{self.sl_atr:g}ATR|"
-            f"TP{self.tp_r:g}R|{self.session_start:02d}-{self.session_end:02d}|{turn}|{be}"
+            f"TP{self.tp_r:g}R|{self.session_start:02d}-{self.session_end:02d}|{turn}|{be}{filter_label}"
         )
 
 
@@ -62,6 +80,13 @@ class Feature:
     zscore: float
     bullish_turn: bool
     bearish_turn: bool
+    # Context available at the close of the signal candle only.
+    sma_slope_10_atr: Optional[float]
+    signal_bar_range_atr: float
+    close_location: float
+    prior20_high: Optional[float]
+    prior20_low: Optional[float]
+    relative_volume: Optional[float]
 
 
 @dataclass
@@ -113,27 +138,76 @@ class Result:
 
 
 def build_features(bars: Sequence[Bar]) -> List[Feature]:
+    """Build only close-known filters; no future candles are referenced."""
     indicator = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     features: List[Feature] = []
+    prior_highs: List[float] = []
+    prior_lows: List[float] = []
+    prior_volumes: List[float] = []
+    close_window: List[float] = []
+    sma_history: List[float] = []
+
     for index, bar in enumerate(bars):
-        values = indicator.update(bar)
-        if not values or index < 300:
-            continue
-        # The two closes immediately before the signal bar are known at close.
-        prior_close = bars[index - 1].close
-        prior_close_2 = bars[index - 2].close
-        features.append(
-            Feature(
-                index=index,
-                bar=bar,
-                atr=float(values["atr_14"]),
-                atr_avg=float(values["atr_avg"]),
-                adx=float(values["adx"]),
-                zscore=float(values["zscore"]),
-                bullish_turn=bar.close > bar.open and prior_close <= prior_close_2,
-                bearish_turn=bar.close < bar.open and prior_close >= prior_close_2,
-            )
+        # Values below are from bars strictly before this signal candle.
+        prior20_high = max(prior_highs[-20:]) if len(prior_highs) >= 20 else None
+        prior20_low = min(prior_lows[-20:]) if len(prior_lows) >= 20 else None
+        prior_volume_average = (
+            sum(prior_volumes[-20:]) / 20.0 if len(prior_volumes) >= 20 else None
         )
+        prior_sma_10 = sma_history[-10] if len(sma_history) >= 10 else None
+
+        values = indicator.update(bar)
+        close_window.append(bar.close)
+        if len(close_window) > config.ZSCORE_PERIOD:
+            close_window.pop(0)
+        current_sma = (
+            sum(close_window) / config.ZSCORE_PERIOD
+            if len(close_window) == config.ZSCORE_PERIOD
+            else None
+        )
+
+        if values and index >= 300:
+            atr = float(values["atr_14"])
+            candle_range = bar.high - bar.low
+            close_location = (bar.close - bar.low) / candle_range if candle_range > 1e-12 else 0.5
+            relative_volume = (
+                bar.volume / prior_volume_average
+                if prior_volume_average and prior_volume_average > 0
+                else None
+            )
+            features.append(
+                Feature(
+                    index=index,
+                    bar=bar,
+                    atr=atr,
+                    atr_avg=float(values["atr_avg"]),
+                    adx=float(values["adx"]),
+                    zscore=float(values["zscore"]),
+                    bullish_turn=bar.close > bar.open and bars[index - 1].close <= bars[index - 2].close,
+                    bearish_turn=bar.close < bar.open and bars[index - 1].close >= bars[index - 2].close,
+                    sma_slope_10_atr=(current_sma - prior_sma_10) / atr
+                    if current_sma is not None and prior_sma_10 is not None and atr > 0
+                    else None,
+                    signal_bar_range_atr=candle_range / atr if atr > 0 else math.inf,
+                    close_location=close_location,
+                    prior20_high=prior20_high,
+                    prior20_low=prior20_low,
+                    relative_volume=relative_volume,
+                )
+            )
+
+        prior_highs.append(bar.high)
+        prior_lows.append(bar.low)
+        prior_volumes.append(bar.volume)
+        if len(prior_highs) > 60:
+            prior_highs.pop(0)
+            prior_lows.pop(0)
+        if len(prior_volumes) > 20:
+            prior_volumes.pop(0)
+        if current_sma is not None:
+            sma_history.append(current_sma)
+            if len(sma_history) > 11:
+                sma_history.pop(0)
     return features
 
 
@@ -155,9 +229,47 @@ def candidate_direction(feature: Feature, params: Parameters, spread: float) -> 
         return None
     if feature.adx > params.adx_max:
         return None
+    if params.max_signal_bar_range_atr is not None and (
+        feature.signal_bar_range_atr > params.max_signal_bar_range_atr
+    ):
+        return None
+    if params.max_relative_volume is not None and feature.relative_volume is not None and (
+        feature.relative_volume > params.max_relative_volume
+    ):
+        return None
+
     if feature.zscore <= -params.z_entry and (not params.require_turn or feature.bullish_turn):
+        if (
+            params.opposing_sma_slope_max_atr is not None
+            and feature.sma_slope_10_atr is not None
+            and feature.sma_slope_10_atr < -params.opposing_sma_slope_max_atr
+        ):
+            return None
+        if params.rejection_close_min is not None and feature.close_location < params.rejection_close_min:
+            return None
+        if (
+            params.require_close_inside_prior20
+            and feature.prior20_low is not None
+            and feature.bar.close < feature.prior20_low
+        ):
+            return None
         return "LONG", sl_distance
+
     if feature.zscore >= params.z_entry and (not params.require_turn or feature.bearish_turn):
+        if (
+            params.opposing_sma_slope_max_atr is not None
+            and feature.sma_slope_10_atr is not None
+            and feature.sma_slope_10_atr > params.opposing_sma_slope_max_atr
+        ):
+            return None
+        if params.rejection_close_min is not None and feature.close_location > 1.0 - params.rejection_close_min:
+            return None
+        if (
+            params.require_close_inside_prior20
+            and feature.prior20_high is not None
+            and feature.bar.close > feature.prior20_high
+        ):
+            return None
         return "SHORT", sl_distance
     return None
 

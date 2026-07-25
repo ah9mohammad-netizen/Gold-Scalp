@@ -130,7 +130,21 @@ This is exactly why optimisation must be chronological: the apparent improvement
 
 ---
 
-## 5. Promotion checklist for any future strategy version
+## 5. Phase 2 result — added regime filters were also rejected
+
+The next diagnosis phase held the v5 entry, exit, sizing, and cost model fixed and tested only close-known state filters designed to avoid continuation fades:
+
+- directionally opposing 10-bar SMA20 slope;
+- maximum signal-candle range relative to ATR;
+- rejection close-location within the signal candle;
+- close back inside the prior 20-bar range; and
+- maximum relative tick-volume versus the prior 20 bars.
+
+The development-selected filter was a maximum signal-bar range of 1.25 ATR. It was still negative in development (PF 0.31), then declined from the baseline's −5.72% 2025+ result to **−7.34%** (17 trades, PF 0.59). The other tested filters were negative, identical to baseline, or had too few trades to be evidence.
+
+See [`V6_REGIME_FILTER_RESEARCH.md`](V6_REGIME_FILTER_RESEARCH.md) and [`V6_REGIME_FILTER_RESEARCH.csv`](V6_REGIME_FILTER_RESEARCH.csv) for all candidates. This rejects simple single-bar OHLC/tick-volume filters as a fix; no v6 setting is promoted.
+
+## 6. Promotion checklist for any future strategy version
 
 A proposed `v6` must answer every item in the database and report, not merely show an attractive equity curve.
 
