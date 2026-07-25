@@ -28,7 +28,7 @@ from bisect import bisect_left
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -343,6 +343,7 @@ def simulate(
     event_times: Sequence[datetime] = (),
     event_pre_minutes: int = 0,
     event_post_minutes: int = 0,
+    entry_allowed: Optional[Callable[[datetime, str], bool]] = None,
 ) -> Result:
     indicators = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     initial = balance = peak = float(config.INITIAL_BALANCE_USDT)
@@ -450,6 +451,12 @@ def simulate(
             vetoed_entries += 1
             # A setup that cannot be acted upon inside a news window is not
             # carried forward as a stale post-event entry.
+            pullback = None
+            continue
+        if entry_allowed is not None and not entry_allowed(decision_time, pullback.direction):
+            vetoed_entries += 1
+            # Macro filters are decision-time gates, not permission to retain
+            # a stale pullback until the regime changes later in the day.
             pullback = None
             continue
         position = fill_position(

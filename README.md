@@ -23,6 +23,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [MTF trend-pullback research](MTF_TREND_PULLBACK_RESEARCH.md) — D1/H4/H1 → M15 → M5 trend alignment/pullback tests are rejected on unseen data
 - [XAU strategy comparison](XAU_STRATEGY_COMPARISON.md) — common decision view across every tested XAU-only family; PAXG excluded
 - [Macro-event veto research](XAU_EVENT_VETO_RESEARCH.md) — user-supplied ForexFactory calendar converted from Tehran display time to UTC; event avoidance alone does not rescue the MTF base strategy
+- [Daily macro-regime research](XAU_DAILY_MACRO_REGIME_RESEARCH.md) — DXY, VIX, oil and stress gates reduce exposure but cannot repair the failed MTF base strategy
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 

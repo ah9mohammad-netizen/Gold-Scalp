@@ -75,6 +75,22 @@ See [`XAU_EVENT_VETO_RESEARCH.md`](XAU_EVENT_VETO_RESEARCH.md) and [`XAU_EVENT_V
 
 ---
 
+## Phase 4B — daily DXY/VIX/oil macro gates
+
+The new daily oil/geopolitics dataset on `main` contributes DXY, VIX, WTI/Brent returns and volatility. To avoid daily-data look-ahead, every intraday XAU decision uses the **latest prior daily row only**; same-day closes and ex-post geopolitical labels are not used as tradeable input.
+
+| Window | No macro gate | Development-selected stress veto | Decision |
+|---|---|---|---|
+| Development: 2019-09 to 2022-12 | −44.67%, PF 0.45 | −20.45%, PF 0.48 | Less bad but still negative. |
+| Validation: 2023–2024 | −63.51%, PF 0.47 | −58.38%, PF 0.45 | Less exposure, no edge. |
+| Holdout: 2025-01 to 2026-01 | −61.24%, PF 0.34 | −53.11%, PF 0.35 | Less loss, still decisively negative. |
+
+The stress veto rejected conditions where the prior VIX exceeded 25, the prior daily WTI move exceeded 3%, or WTI 7-day volatility exceeded 1.5× its 30-day baseline. It reduced trades and drawdown but did not lift PF above 1. The DXY-direction gate performed worse, so it is also rejected.
+
+See [`XAU_DAILY_MACRO_REGIME_RESEARCH.md`](XAU_DAILY_MACRO_REGIME_RESEARCH.md) and [`XAU_DAILY_MACRO_REGIME_RESEARCH.csv`](XAU_DAILY_MACRO_REGIME_RESEARCH.csv).
+
+---
+
 ## What remains worth testing
 
 We should not retune EMA periods, stop multipliers, target R values, or event-window sizes against these holdout results. The next candidate needs **new information**, not another variation of price-only rules.
