@@ -26,6 +26,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [Daily macro-regime research](XAU_DAILY_MACRO_REGIME_RESEARCH.md) — DXY, VIX, oil and stress gates reduce exposure but cannot repair the failed MTF base strategy
 - [Impulse–pullback–reclaim discovery](XAU_IMPULSE_RECLAIM_DISCOVERY.md) — outcome labels reject the structural continuation premise before PnL optimisation
 - [XAU data-quality audit](XAU_DATA_QUALITY_AUDIT.md) — two critical multi-day holes mean all current strategy conclusions are provisional until repaired or gap-guarded
+- [Compressed-archive reconciliation](XAU_COMPRESSED_ARCHIVE_RECONCILIATION.md) — the 2004–2026 archive is valid but exactly preserves the recent missing windows
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 
