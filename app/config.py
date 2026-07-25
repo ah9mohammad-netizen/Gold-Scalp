@@ -1,12 +1,14 @@
 """
-Configuration — XAU-USDT Gold Edge v5 (research-validated on real 5m history).
+Configuration — XAU-USDT paper-research baseline (legacy v5 settings).
 
-After testing 25+ strategy families on 443k bars (2019-2026):
-  DEAD: EMA cross, Donchian, Supertrend, Asia/London/NY breakouts, Hermes 5R
-  WEAK: EMA pullback, PDH/PDL, RSI MR
-  BEST: Z-Score mean reversion in ranging markets (N30-style)
+The current Z-score settings are retained only so historical experiments and
+paper plumbing remain reproducible.  Once the M5 server clock was normalized
+with IANA DST rules, M1 repairs were applied, and a universal gap guard was
+used, v5 did *not* survive development/validation/holdout testing after the
+current engineered costs.  No strategy in this repository is research-validated
+for live execution.
 
-v5 core:
+v5 baseline (not promoted):
   • Z-Score ±2.2 fade when ADX ≤ 18 (strict range)
   • Turn confirmation bar
   • SL 2.5×ATR, TP 2.0R (fixed RR, not early BE)
@@ -120,7 +122,7 @@ class AppConfig:
     RSI_OVERSOLD: float = float(os.getenv("RSI_OVERSOLD", "28.0"))
     ADX_PERIOD: int = int(os.getenv("ADX_PERIOD", "14"))
 
-    # Z-Score MR (PRIMARY — research best)
+    # Legacy Z-score baseline only — it failed canonical UTC walk-forward tests.
     ZSCORE_ENTRY: float = float(os.getenv("ZSCORE_ENTRY", "2.2"))
     ADX_RANGE_MAX: float = float(os.getenv("ADX_RANGE_MAX", "18.0"))  # strict range only
     REQUIRE_TURN_CONFIRM: bool = _env_bool("REQUIRE_TURN_CONFIRM", "true")

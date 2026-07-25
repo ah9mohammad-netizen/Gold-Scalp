@@ -31,6 +31,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [Native M1/M5 reconciliation](XAU_M1_M5_RECONCILIATION.md) — native M1 validates an EET/EEST M5 server clock and supplies provenance-labelled repair bars
 - [Canonical UTC research rerun](XAU_CANONICAL_RESEARCH_RERUN.md) — all strategy families re-tested after timezone correction, M1 repair, and gap guard
 - [Execution-cost sensitivity](XAU_COST_SENSITIVITY.md) — fees materially affect v5, but low-cost scenarios still fail robust all-period validation
+- [Regime + indicator architecture study](XAU_REGIME_INDICATOR_STACK.md) — pre-registered MACD/RSI/CCI/Bollinger/VWAP regime families, independently rejected under canonical cost-aware walk-forward testing; no composite is manufactured from failed families
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 
