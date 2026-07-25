@@ -1,0 +1,1 @@
+config_id,context,fold,opened_at_utc,closed_at_utc,direction,entry,exit,size_oz,gross_pnl_usd,entry_fee_usd,exit_fee_usd,net_pnl_usd,exit_reason,bars_held,ambiguous_ohlc_exit,balance_after
