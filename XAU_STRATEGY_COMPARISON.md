@@ -6,7 +6,9 @@
 
 **Common friction model:** $0.40 spread, $0.03 adverse slippage per fill, 0.04% taker fee per side, one position maximum, and stop-first treatment when a later OHLC bar touches both stop and target.
 
-> **Decision:** none of the tested strategy families has passed the research gate. The comparison is valuable because it tells us what to stop tuning: simple M5 fading, simple OHLC regime filters, Asian/London sweep fades, and simple EMA-alignment pullbacks.
+> **Data-quality caveat:** a subsequent audit found two critical multi-day source gaps: 2025-09-12 → 2025-10-15 and 2026-01-13 → 2026-01-22. Any result that crosses or depends on those dates is provisional until repaired or re-run with a declared gap guard. See [`XAU_DATA_QUALITY_AUDIT.md`](XAU_DATA_QUALITY_AUDIT.md).
+
+> **Decision:** none of the tested strategy families has passed the research gate under the current data and cost model. This is an elimination result, not proof that no gold strategy can work.
 
 ---
 
