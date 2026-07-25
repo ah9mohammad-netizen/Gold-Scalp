@@ -6,7 +6,7 @@
 
 **Common friction model:** $0.40 spread, $0.03 adverse slippage per fill, 0.04% taker fee per side, one position maximum, and stop-first treatment when a later OHLC bar touches both stop and target.
 
-> **Data-quality caveat:** a subsequent audit found two critical multi-day source gaps: 2025-09-12 → 2025-10-15 and 2026-01-13 → 2026-01-22. Any result that crosses or depends on those dates is provisional until repaired or re-run with a declared gap guard. See [`XAU_DATA_QUALITY_AUDIT.md`](XAU_DATA_QUALITY_AUDIT.md).
+> **Data-quality and time caveat:** the raw M5 `Date` labels are empirically EET/EEST broker-server time, not UTC. A native M1 source validates this via 0.997 return correlation after canonical UTC conversion and supplies repair bars for the two critical multi-day gaps. Every prior session/event result is provisional until re-run from the canonical UTC, M1-repaired series with a declared gap guard. See [`XAU_M1_M5_RECONCILIATION.md`](XAU_M1_M5_RECONCILIATION.md).
 
 > **Decision:** none of the tested strategy families has passed the research gate under the current data and cost model. This is an elimination result, not proof that no gold strategy can work.
 
