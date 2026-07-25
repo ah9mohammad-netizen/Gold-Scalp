@@ -1,130 +1,148 @@
-# Railway 24/7 Deployment & Telegram UI Guide
+# Railway 24/7 deployment and Telegram operations
 
-**Asset:** `XAU-USDT` paper perpetual  
-**Start balance:** `$100.00 USDT` · up to `50x` leverage (risk-sized)  
-**Persistent DB:** Railway Volume mount `/data` → **`/data/history.db`**
+**Mode:** paper trading only
 
----
+**Instrument:** direct `XAU-USDT` perpetual feed (Bybit preferred, OKX fallback)
 
-## Architecture
+**Starting account:** 100 USDT
 
-```
-Railway worker: python -m app.main
- ├── LiveMarketDataFeed   (Bybit / OKX / Binance PAXG / CCXT)
- ├── LayeredDecisionEngine (4 layers → direction, entry, SL, TP)
- ├── PaperTradingEngine    ($100 book, SL/TP, balance updates)
- ├── DatabaseEngine        (/data/history.db)
- └── TelegramUI           (commands + push alerts)
-```
+**Persistent file:** Railway Volume mounted at `/data` → `/data/history.db`
+
+> The service has no live ApeX execution adapter. It intentionally aborts if `PAPER_TRADING=false`; do not add exchange credentials expecting it to trade live.
 
 ---
 
-## 1. Create Volume
+## 1. Railway Volume (required)
 
-1. Railway project → your service → **Volumes** → **+ Create Volume**
-2. **Mount Path:** `/data`
-3. Bot writes: **`/data/history.db`**
+1. In the Railway service, open **Volumes** → **Create Volume**.
+2. Set **mount path** to `/data`.
+3. Deploy the service. The worker writes `/data/history.db` plus temporary SQLite WAL files as needed.
 
-If `/data` is missing (local dev), the bot uses `./history.db`.
+The database uses SQLite WAL for safe concurrent reads/writes. `/get_db` creates a consistent standalone backup before sending it to Telegram, so recent WAL records are included.
 
----
+## 2. Railway variables
 
-## 2. Environment variables
+Copy the values below into **Railway → Service → Variables**. Never commit a real Telegram token or future API key.
 
 ```env
 ENV=production
 PAPER_TRADING=true
 PAPER_BALANCE=100.00
+
 SYMBOL=XAU-USDT
 EXCHANGE_ID=bybit
 TIMEFRAME=5m
-POLL_INTERVAL_SECONDS=5.0
+POLL_INTERVAL_SECONDS=5
+ONLY_CLOSED_CANDLES=true
+MAX_DATA_STALENESS_SECONDS=900
+ALLOW_PROXY_FEEDS=false
+
 MAX_LEVERAGE=50
-RISK_PER_TRADE_PCT=1.5
-MAX_SPREAD_USD=0.45
+RISK_PER_TRADE_PCT=1.0
+MAX_SPREAD_USD=0.40
 MAX_OPEN_TRADES=1
-MAX_DAILY_LOSS_PCT=6.0
+MAX_DAILY_LOSS_PCT=4.0
+MAX_TRADES_PER_DAY=3
+ENTRY_COOLDOWN_SECONDS=600
+LOSS_COOLDOWN_SECONDS=1200
+MARGIN_CAP_PCT=35.0
+
+ALLOWED_SESSIONS=7-17
+ZSCORE_PERIOD=20
+ZSCORE_ENTRY=2.2
+ADX_RANGE_MAX=18
+REQUIRE_TURN_CONFIRM=true
+SL_ATR_MULTIPLIER=2.5
+TP_RR_RATIO=2.0
+
+# Conservative paper execution assumptions; tune only from real fill evidence.
+PAPER_TAKER_FEE_RATE=0.0004
+PAPER_SLIPPAGE_USD=0.03
+
 DB_PATH=/data/history.db
 DATABASE_URL=sqlite:////data/history.db
-TELEGRAM_BOT_TOKEN=xxxx:yyyy
-TELEGRAM_CHAT_ID=123456789
+TELEGRAM_BOT_TOKEN=123456:replace_me
+TELEGRAM_CHAT_ID=replace_me
 ```
 
-### Telegram setup
+### Important variable notes
 
-1. `@BotFather` → `/newbot` → copy token → `TELEGRAM_BOT_TOKEN`
-2. Open a chat with your bot, send `/start`
-3. Visit `https://api.telegram.org/bot<TOKEN>/getUpdates` → copy `chat.id` → `TELEGRAM_CHAT_ID`
+- `ALLOW_PROXY_FEEDS=false` means the bot will remain flat rather than silently use PAXG as XAU-USDT. Turn it on only for an explicitly labelled proxy experiment.
+- `ONLY_CLOSED_CANDLES=true` avoids acting on an updating 5-minute candle. The service polls frequently, but a candle is consumed once.
+- `MAX_LEVERAGE` is only a margin constraint; position size is based on the stop/risk budget. It is **not** a profit target.
+- Never tune paper fees/slippage to zero. The ledger stores gross PnL, simulated fees, and net PnL separately.
 
----
+## 3. Telegram setup
 
-## 3. Deploy
+1. Create a bot using `@BotFather` and set `TELEGRAM_BOT_TOKEN`.
+2. Start a private chat with the bot and send `/start`.
+3. Obtain the chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates` and set `TELEGRAM_CHAT_ID`.
+4. Redeploy/restart the Railway service.
 
-- **Builder:** Nixpacks (`railway.json`)
-- **Start:** `python -m app.main` (also in `Procfile` as `worker:`)
-- **Restart:** on failure, up to 10 retries
+When `TELEGRAM_CHAT_ID` is set, commands from other chats are ignored. Do not put the token in chat, source control, or a public issue.
 
-On boot you should get:
+## 4. Deploy and verify
 
-`🟢 XAU-USDT Strategy & Paper Trading Bot Online 24/7`
+`railway.json` starts the service as:
 
----
+```bash
+python -m app.main
+```
 
-## 4. Telegram commands
+The worker has an on-failure restart policy. After deployment, inspect Railway logs for:
 
-| Command | Purpose |
-|--------|---------|
-| `/status` | Mode, live price, feed source, DB path |
-| `/balance` | Equity, total & day PnL, $ risk |
-| `/get_db` | Upload **`history.db`** from the Volume |
-| `/signals` | Last 5 signals + layer notes |
-| `/trades` | Open positions + recent closes (SL/TP) |
-| `/stats` | Win rate, profit factor, best/worst |
-| `/pause` | Stop **new** entries (open trades still managed) |
-| `/resume` | Allow new entries again |
-| `/close_all` | Flatten all paper positions at last price |
-| `/force_long` / `/force_short` | Synthetic structure test at **live** price |
+```text
+XAU-USDT Layered Scalper + Telegram UI starting
+mode=PAPER | balance=$100.00
+```
 
----
+Then use Telegram:
 
-## 5. What is stored in `history.db`
+1. `/status` — confirm direct feed source, last **closed** bar, and database path.
+2. `/balance` — confirm 100-USDT realized balance and zero open margin.
+3. `/get_db` — confirm a `history.db` document arrives.
+4. `/pause`, restart the service, then `/status` — confirm the pause persisted.
+5. `/resume` only after the above checks pass.
 
-| Table | Contents |
-|-------|----------|
-| `signals` | Direction, entry, SL, TP1/TP2, layer reasons, status |
-| `trades` | Size oz, margin, open/close, exit reason (`SL_HIT` / `TP1_HIT` / `TP2_HIT` / `MANUAL_CLOSE`), PnL |
-| `account_history` | Balance before/after every fill (starts at $100) |
-| `bot_state` | Pause flag etc. |
+If no direct XAU feed is available, the bot logs the failure and opens no synthetic or proxy trade. This is expected safe behavior.
 
-Download anytime with **`/get_db`**, then open in DB Browser for SQLite / DBeaver / pandas.
+## 5. Telegram command reference
 
----
+| Command | Action |
+|---|---|
+| `/status` | Feed, latest closed candle, indicators, entry state, marked equity, DB path |
+| `/balance` | Realized balance, fee-aware open PnL, equity, used/free margin |
+| `/get_db` | Sends a consistent SQLite `history.db` snapshot for analysis |
+| `/signals` | Latest executed setup records and their indicators |
+| `/trades` | Open paper position plus recent closed positions |
+| `/stats` | Net PnL, fee total, profit factor, exits and equity |
+| `/pause` / `/resume` | Persistently disable / permit **new** paper entries; open positions remain managed |
+| `/close_all` | Emergency paper flatten at the latest executable quote assumption |
+| `/force_long` / `/force_short` | Opens a clearly labelled paper-only test at the last live price; not a strategy signal |
 
-## 6. Risk model ($100 example)
+## 6. Database contents
 
-\[
-\text{size (oz)} = \frac{\text{balance} \times 1.5\%}{\text{ATR}\times 1.5}
-\]
+| Table | Purpose |
+|---|---|
+| `signals` | closed-bar source/time, setup version, indicators, reference/fill price, SL/TP, risk and layer notes |
+| `trades` | filled entry/exit, margin, gross PnL, entry/exit fees, **net** PnL and exit reason |
+| `account_history` | initial 100-USDT deposit and every realized balance change |
+| `bot_state` | persistent pause flag and last processed candle for restart idempotency |
 
-Margin ≈ `(entry × size) / leverage`, capped at **40%** of equity.
+Open it with DB Browser for SQLite, DBeaver, or Python/pandas. Analyse **net** PnL; a gross-PnL chart that ignores spread, fee, and slippage is not a go-live metric.
 
-Sessions (UTC): **07–10** (London) and **12–16** (NY overlap).  
-Outside those windows the engine stays flat unless you `/force_*`.
-
----
-
-## 7. Apex (later)
-
-Keep `PAPER_TRADING=true` until stats look stable.  
-When ready, wire Apex keys (`APEX_API_*`) and flip paper off — execution adapter is the only piece left to swap; DB + Telegram stay the same.
-
----
-
-## 8. Local smoke test
+## 7. Local smoke test
 
 ```bash
 pip install -r requirements.txt
-DB_PATH=./history.db PAPER_TRADING=true python -m app.main
+cp .env.example .env
+# set DB_PATH=./history.db and optional TELEGRAM_* values in .env
+python -m unittest discover -s tests -v
+python -m app.main
 ```
 
-Ctrl+C stops cleanly (SIGINT/SIGTERM).
+`python-dotenv` loads `.env` locally without overriding Railway variables. Press `Ctrl+C` for a clean shutdown.
+
+## 8. Later ApeX work
+
+Do not simply flip an environment flag. A live adapter needs a separate security and execution review: contract discovery, multiplier/tick/step validation, isolated-margin policy, signed order IDs, fill/order WebSocket reconciliation, idempotency, stop/TP placement confirmation, funding, liquidation metrics, API rate limits, and an emergency kill switch. Keep this database and Telegram UI; replace only the audited execution adapter after a sufficiently long paper/forward test.

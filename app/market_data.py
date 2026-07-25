@@ -1,17 +1,17 @@
-"""
-Live Market Data Feed — XAU-USDT Gold Edge v3.
+"""Live, closed-candle market data for the XAU-USDT paper service.
 
-STRICT LIVE DATA ONLY. Builds full indicator pack for the v3 engine:
-  EMA200, EMA50, ATR14, ATR avg, RSI, ADX/+DI/-DI,
-  true calendar Asian range (00:00–07:00 UTC),
-  NY ORB range (13:00–16:00 UTC), session VWAP proxy,
-  prev closes for turn confirmation.
+No generated prices are used.  The preferred feeds are the direct XAU-USDT
+perpetuals.  PAXG is deliberately excluded unless ``ALLOW_PROXY_FEEDS=true``;
+it tracks gold but is not the requested contract and must never be a silent
+substitution.  REST polling is intentionally conservative: the strategy only
+receives a bar after that bar has closed.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import math
 import ssl
 import urllib.request
 from datetime import datetime, timezone
@@ -30,177 +30,203 @@ except ImportError:
     CCXT_AVAILABLE = False
 
 
-def _ssl_context() -> ssl.SSLContext:
-    return ssl.create_default_context()
-
-
 def _http_get_json(url: str, timeout: float = 8.0) -> Optional[Any]:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json",
-    }
-    req = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Gold-Scalp/5.1 (paper-research; closed-candle)",
+            "Accept": "application/json",
+        },
+    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        context = ssl.create_default_context()
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            return json.loads(response.read().decode("utf-8"))
     except Exception as exc:
-        logger.debug("HTTP GET failed %s: %s", url, exc)
+        logger.debug("GET failed %s: %s", url, exc)
         return None
 
 
-def _bar_hour_utc(ts_ms: float) -> int:
-    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).hour
+def _timeframe_seconds(value: str) -> int:
+    raw = value.strip().lower()
+    try:
+        if raw.endswith("m"):
+            return max(60, int(raw[:-1]) * 60)
+        if raw.endswith("h"):
+            return int(raw[:-1]) * 3600
+    except ValueError:
+        pass
+    raise ValueError("TIMEFRAME must look like 5m or 1h")
 
 
-def _bar_date_utc(ts_ms: float) -> str:
-    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+def _bar_hour_utc(timestamp_ms: float) -> int:
+    return datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc).hour
+
+
+def _bar_date_utc(timestamp_ms: float) -> str:
+    return datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
 class LiveMarketDataFeed:
     def __init__(self) -> None:
         self.tech = TechnicalIndicators()
-        self.last_known_price: float = 0.0
-        self.last_valid_source: str = "NONE"
+        self.last_known_price = 0.0
+        self.last_valid_source = "NONE"
         self.last_tick: Optional[Dict[str, Any]] = None
-        self.consecutive_failures: int = 0
+        self.consecutive_failures = 0
+        self.timeframe_seconds = _timeframe_seconds(config.TIMEFRAME)
+
+    def _closed_rows(self, rows: List[list]) -> List[list]:
+        """Validate, sort and remove the live/incomplete candle."""
+        cleaned: List[list] = []
+        seen: set[int] = set()
+        for row in rows:
+            try:
+                ts = int(float(row[0]))
+                o, h, l, c = (float(row[i]) for i in range(1, 5))
+                v = float(row[5] or 0.0)
+            except (IndexError, TypeError, ValueError):
+                continue
+            if (
+                ts in seen
+                or not all(math.isfinite(x) for x in (o, h, l, c, v))
+                or min(o, h, l, c) <= 0
+                or h < max(o, c, l)
+                or l > min(o, c, h)
+            ):
+                continue
+            seen.add(ts)
+            cleaned.append([ts, o, h, l, c, max(v, 0.0)])
+        cleaned.sort(key=lambda item: item[0])
+        if config.ONLY_CLOSED_CANDLES:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            period_ms = self.timeframe_seconds * 1000
+            # A small boundary buffer avoids accepting an exchange's stale
+            # still-open candle exactly at the minute transition.
+            cleaned = [row for row in cleaned if row[0] + period_ms <= now_ms - 1000]
+        return cleaned
 
     def _build_tick_result(
         self,
         source_name: str,
-        timestamps_ms: List[float],
-        opens: List[float],
-        highs: List[float],
-        lows: List[float],
-        closes: List[float],
-        volumes: Optional[List[float]],
-        spread: float,
-    ) -> Dict[str, Any]:
-        latest_close = float(closes[-1])
-        latest_high = float(highs[-1])
-        latest_low = float(lows[-1])
-        latest_open = float(opens[-1]) if opens else latest_close
-        prev_close = float(closes[-2]) if len(closes) >= 2 else latest_close
-        prev_close_2 = float(closes[-3]) if len(closes) >= 3 else prev_close
-        prev_high = float(highs[-2]) if len(highs) >= 2 else latest_high
-        prev_low = float(lows[-2]) if len(lows) >= 2 else latest_low
-
-        ema_200 = round(self.tech.calculate_ema(closes, config.EMA_TREND_PERIOD), 2)
-        ema_50 = round(self.tech.calculate_ema(closes, config.EMA_FAST_PERIOD), 2)
-        ema_21 = round(self.tech.calculate_ema(closes, config.EMA_PULLBACK_PERIOD), 2)
-        atr_14 = round(self.tech.calculate_atr(highs, lows, closes, config.ATR_PERIOD), 2)
-        rsi_14 = round(self.tech.calculate_rsi(closes, config.RSI_PERIOD), 1)
-        adx, plus_di, minus_di = self.tech.calculate_adx(
-            highs, lows, closes, config.ADX_PERIOD
+        source_symbol: str,
+        ohlcv: List[list],
+        bid: float = 0.0,
+        ask: float = 0.0,
+        is_proxy: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        rows = self._closed_rows(ohlcv)
+        required = max(config.EMA_TREND_PERIOD, config.ATR_AVG_LOOKBACK + config.ATR_PERIOD + 2, 60)
+        if len(rows) < required:
+            logger.debug("%s has %d valid closed candles; need %d", source_name, len(rows), required)
+            return None
+        timestamps = [float(row[0]) for row in rows]
+        opens = [float(row[1]) for row in rows]
+        highs = [float(row[2]) for row in rows]
+        lows = [float(row[3]) for row in rows]
+        closes = [float(row[4]) for row in rows]
+        volumes = [float(row[5]) for row in rows]
+        latest_close = closes[-1]
+        latest_bar_ms = int(timestamps[-1])
+        bar_age = datetime.now(timezone.utc).timestamp() - (
+            latest_bar_ms / 1000.0 + self.timeframe_seconds
         )
-        z_period = config.ZSCORE_PERIOD
-        sma_z = round(self.tech.calculate_sma(closes, z_period), 2)
-        stdev_z = round(self.tech.calculate_stdev(closes, z_period), 4)
-        zscore = round((latest_close - sma_z) / stdev_z, 3) if stdev_z > 1e-9 else 0.0
+        if bar_age > config.MAX_DATA_STALENESS_SECONDS:
+            logger.warning("Rejecting stale %s candle (%.0fs old)", source_name, bar_age)
+            return None
 
-        atr_series = self.tech.atr_series(highs, lows, closes, config.ATR_PERIOD)
-        look = config.ATR_AVG_LOOKBACK
-        if atr_series:
-            window = atr_series[-look:] if len(atr_series) >= look else atr_series
-            atr_avg = round(sum(window) / len(window), 2)
-        else:
-            atr_avg = atr_14
+        # The ticker is newer than the candle. It is used only for current
+        # spread/fill assumptions, never to calculate indicators.
+        if not (ask > bid > 0):
+            estimated_spread = min(config.MAX_ALLOWABLE_SPREAD_USD, max(0.01, latest_close * 0.00005))
+            bid, ask = latest_close - estimated_spread / 2, latest_close + estimated_spread / 2
+        spread = max(0.0, ask - bid)
 
-        # Session VWAP proxy (volume-weighted typical price over available bars)
-        vwap_num = 0.0
-        vwap_den = 0.0
-        for i, h in enumerate(highs):
-            tp = (h + lows[i] + closes[i]) / 3.0
-            vol = float(volumes[i]) if volumes and i < len(volumes) and volumes[i] else 1.0
-            vwap_num += tp * vol
-            vwap_den += vol
-        vwap = round(vwap_num / vwap_den, 2) if vwap_den else latest_close
+        ema_200 = self.tech.calculate_ema(closes, config.EMA_TREND_PERIOD)
+        ema_50 = self.tech.calculate_ema(closes, config.EMA_FAST_PERIOD)
+        ema_21 = self.tech.calculate_ema(closes, config.EMA_PULLBACK_PERIOD)
+        atr_14 = self.tech.calculate_atr(highs, lows, closes, config.ATR_PERIOD)
+        rsi_14 = self.tech.calculate_rsi(closes, config.RSI_PERIOD)
+        adx, plus_di, minus_di = self.tech.calculate_adx(highs, lows, closes, config.ADX_PERIOD)
+        sma_z = self.tech.calculate_sma(closes, config.ZSCORE_PERIOD)
+        stdev_z = self.tech.calculate_stdev(closes, config.ZSCORE_PERIOD)
+        zscore = (latest_close - sma_z) / stdev_z if stdev_z > 1e-9 else 0.0
+        atr_values = self.tech.atr_series(highs, lows, closes, config.ATR_PERIOD)
+        atr_window = atr_values[-config.ATR_AVG_LOOKBACK :] or [atr_14]
+        atr_avg = sum(atr_window) / len(atr_window)
 
-        now = datetime.now(timezone.utc)
-        today = now.strftime("%Y-%m-%d")
+        # Indicators based on the current UTC day's closed bars only.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        day_indexes = [i for i, ts in enumerate(timestamps) if _bar_date_utc(ts) == today]
+        if not day_indexes:
+            day_indexes = list(range(max(0, len(rows) - 72), len(rows)))
+        vwap_num = vwap_den = 0.0
+        for i in day_indexes:
+            typical = (highs[i] + lows[i] + closes[i]) / 3.0
+            volume = volumes[i] or 1.0
+            vwap_num += typical * volume
+            vwap_den += volume
+        vwap = vwap_num / vwap_den if vwap_den else latest_close
 
-        # ── True calendar Asian range (today 00:00–ASIAN_END UTC) ──
-        asian_highs: List[float] = []
-        asian_lows: List[float] = []
-        for i, ts in enumerate(timestamps_ms):
-            d = _bar_date_utc(ts)
-            h = _bar_hour_utc(ts)
-            if d == today and config.ASIAN_START_HOUR_UTC <= h < config.ASIAN_END_HOUR_UTC:
-                asian_highs.append(highs[i])
-                asian_lows.append(lows[i])
+        asian = [
+            i
+            for i, ts in enumerate(timestamps)
+            if _bar_date_utc(ts) == today
+            and config.ASIAN_START_HOUR_UTC <= _bar_hour_utc(ts) < config.ASIAN_END_HOUR_UTC
+        ]
+        asian_high = max((highs[i] for i in asian), default=max(highs[-min(72, len(highs)) :]))
+        asian_low = min((lows[i] for i in asian), default=min(lows[-min(72, len(lows)) :]))
+        now_hour = datetime.now(timezone.utc).hour
 
-        asian_range_ready = len(asian_highs) >= 6  # ≥30m of 5m bars
-        if asian_highs:
-            asian_high = round(max(asian_highs), 2)
-            asian_low = round(min(asian_lows), 2)
-        else:
-            # Fallback rolling ~6h if calendar Asia not in window yet
-            lb = 72 if len(highs) >= 72 else min(30, len(highs))
-            asian_high = round(max(highs[-lb:]), 2)
-            asian_low = round(min(lows[-lb:]), 2)
-            asian_range_ready = now.hour >= config.ASIAN_END_HOUR_UTC
-
-        # After Asia end, freeze "ready"
-        if now.hour >= config.ASIAN_END_HOUR_UTC and asian_highs:
-            asian_range_ready = True
-
-        # ── NY ORB range (today 13:00–16:00 UTC) ──
-        ny_highs: List[float] = []
-        ny_lows: List[float] = []
-        for i, ts in enumerate(timestamps_ms):
-            d = _bar_date_utc(ts)
-            h = _bar_hour_utc(ts)
-            if (
-                d == today
-                and config.NY_ORB_START_HOUR_UTC
-                <= h
-                < config.NY_ORB_END_HOUR_UTC
-            ):
-                ny_highs.append(highs[i])
-                ny_lows.append(lows[i])
-
-        ny_orb_ready = (
-            len(ny_highs) >= 6
-            and now.hour >= config.NY_ORB_DECISION_HOUR_UTC
-        )
-        ny_orb_high = round(max(ny_highs), 2) if ny_highs else 0.0
-        ny_orb_low = round(min(ny_lows), 2) if ny_lows else 0.0
-
-        tick = {
-            "timestamp": now,
+        ny_orb = [
+            i
+            for i, ts in enumerate(timestamps)
+            if _bar_date_utc(ts) == today
+            and config.NY_ORB_START_HOUR_UTC <= _bar_hour_utc(ts) < config.NY_ORB_END_HOUR_UTC
+        ]
+        tick: Dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(
+                (latest_bar_ms / 1000.0) + self.timeframe_seconds, tz=timezone.utc
+            ),
+            "bar_timestamp_ms": latest_bar_ms,
+            "bar_closed_at": datetime.fromtimestamp(
+                (latest_bar_ms / 1000.0) + self.timeframe_seconds, tz=timezone.utc
+            ).isoformat(),
             "source": source_name,
-            "close": latest_close,
-            "open": latest_open,
-            "high": latest_high,
-            "low": latest_low,
-            "spread": float(spread),
-            "atr_14": atr_14,
-            "atr_avg": atr_avg,
-            "rsi_14": rsi_14,
-            "ema_200": ema_200,
-            "ema_50": ema_50,
-            "ema_21": ema_21,
-            "sma_z": sma_z,
-            "sma_20": sma_z,
-            "stdev_z": stdev_z,
-            "stdev_20": stdev_z,
-            "zscore": zscore,
-            "vwap": vwap,
-            "adx": adx,
-            "plus_di": plus_di,
-            "minus_di": minus_di,
-            "asian_high": asian_high,
-            "asian_low": asian_low,
-            "asian_range_ready": asian_range_ready,
-            "ny_orb_high": ny_orb_high,
-            "ny_orb_low": ny_orb_low,
-            "ny_orb_ready": ny_orb_ready,
-            "prev_close": prev_close,
-            "prev_close_2": prev_close_2,
-            "prev_high": prev_high,
-            "prev_low": prev_low,
+            "source_symbol": source_symbol,
+            "is_proxy": is_proxy,
+            "close": round(latest_close, 4),
+            "open": round(opens[-1], 4),
+            "high": round(highs[-1], 4),
+            "low": round(lows[-1], 4),
+            "bid": round(bid, 4),
+            "ask": round(ask, 4),
+            "spread": round(spread, 4),
+            "atr_14": round(atr_14, 4),
+            "atr_avg": round(atr_avg, 4),
+            "rsi_14": round(rsi_14, 3),
+            "adx": round(adx, 3),
+            "plus_di": round(plus_di, 3),
+            "minus_di": round(minus_di, 3),
+            "ema_200": round(ema_200, 4),
+            "ema_50": round(ema_50, 4),
+            "ema_21": round(ema_21, 4),
+            "sma_z": round(sma_z, 4),
+            "sma_20": round(sma_z, 4),
+            "stdev_z": round(stdev_z, 6),
+            "stdev_20": round(stdev_z, 6),
+            "zscore": round(zscore, 4),
+            "vwap": round(vwap, 4),
+            "asian_high": round(asian_high, 4),
+            "asian_low": round(asian_low, 4),
+            "asian_range_ready": len(asian) >= 6 and now_hour >= config.ASIAN_END_HOUR_UTC,
+            "ny_orb_high": round(max((highs[i] for i in ny_orb), default=0.0), 4),
+            "ny_orb_low": round(min((lows[i] for i in ny_orb), default=0.0), 4),
+            "ny_orb_ready": len(ny_orb) >= 6 and now_hour >= config.NY_ORB_DECISION_HOUR_UTC,
+            "prev_close": round(closes[-2], 4),
+            "prev_close_2": round(closes[-3], 4),
+            "prev_high": round(highs[-2], 4),
+            "prev_low": round(lows[-2], 4),
         }
         self.last_known_price = latest_close
         self.last_valid_source = source_name
@@ -208,195 +234,126 @@ class LiveMarketDataFeed:
         self.consecutive_failures = 0
         return tick
 
-    def _from_ohlcv_matrix(
-        self, source: str, ohlcv: List[list], spread: float
-    ) -> Optional[Dict[str, Any]]:
-        """ohlcv rows: [ts, o, h, l, c, v]"""
-        if not ohlcv or len(ohlcv) < 30:
-            return None
-        ts = [float(b[0]) for b in ohlcv]
-        opens = [float(b[1]) for b in ohlcv]
-        highs = [float(b[2]) for b in ohlcv]
-        lows = [float(b[3]) for b in ohlcv]
-        closes = [float(b[4]) for b in ohlcv]
-        vols = [float(b[5] or 0) for b in ohlcv]
-        return self._build_tick_result(
-            source, ts, opens, highs, lows, closes, vols, spread
+    def _bybit_interval(self) -> str:
+        """Translate the configured CCXT-style timeframe to Bybit's interval."""
+        raw = config.TIMEFRAME.strip().lower()
+        if raw.endswith("m"):
+            return raw[:-1]
+        if raw.endswith("h"):
+            return str(int(raw[:-1]) * 60)
+        raise ValueError(f"Unsupported Bybit timeframe: {config.TIMEFRAME}")
+
+    @staticmethod
+    def _bybit_ticker() -> Tuple[float, float]:
+        data = _http_get_json(
+            "https://api.bybit.com/v5/market/tickers?category=linear&symbol=XAUUSDT", timeout=5.0
         )
+        try:
+            row = data["result"]["list"][0]
+            return float(row.get("bid1Price") or 0), float(row.get("ask1Price") or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            return 0.0, 0.0
 
-    # ── CCXT ─────────────────────────────────────────────────────
-    def _fetch_via_ccxt_sync(self) -> Optional[Dict[str, Any]]:
-        if not CCXT_AVAILABLE:
-            return None
-        pairs: List[Tuple[str, str]] = [
-            ("bybit", "XAU/USDT:USDT"),
-            ("okx", "XAU/USDT:USDT"),
-            ("binance", "PAXG/USDT"),
-            ("phemex", "XAU/USDT:USDT"),
-            ("gate", "PAXG/USDT"),
-        ]
-        for ex_id, symbol in pairs:
-            try:
-                cls = getattr(ccxt, ex_id, None)
-                if not cls:
-                    continue
-                ex = cls({"timeout": 8000, "enableRateLimit": True})
-                ohlcv = ex.fetch_ohlcv(symbol, timeframe="5m", limit=200)
-                if not ohlcv or len(ohlcv) < 30:
-                    continue
-                spread = 0.15
-                try:
-                    t = ex.fetch_ticker(symbol)
-                    bid = float(t.get("bid") or 0)
-                    ask = float(t.get("ask") or 0)
-                    if ask > bid > 0:
-                        spread = round(ask - bid, 2)
-                except Exception:
-                    pass
-                return self._from_ohlcv_matrix(
-                    f"LIVE_CCXT_{ex_id.upper()}_{symbol}", ohlcv, spread
-                )
-            except Exception as exc:
-                logger.debug("CCXT %s failed: %s", ex_id, exc)
-        return None
-
-    # ── REST ─────────────────────────────────────────────────────
     def _fetch_bybit_rest_sync(self) -> Optional[Dict[str, Any]]:
         data = _http_get_json(
-            "https://api.bybit.com/v5/market/kline?category=linear&symbol=XAUUSDT&interval=5&limit=200"
+            "https://api.bybit.com/v5/market/kline?category=linear&symbol=XAUUSDT"
+            f"&interval={self._bybit_interval()}&limit=300"
         )
         if not data or data.get("retCode") != 0:
             return None
-        raw = list(reversed(data.get("result", {}).get("list") or []))
-        if len(raw) < 30:
-            return None
-        # Bybit: [start, open, high, low, close, volume, turnover]
-        ohlcv = [
-            [float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5] or 0)]
-            for r in raw
-        ]
-        spread = 0.15
-        tdata = _http_get_json(
-            "https://api.bybit.com/v5/market/tickers?category=linear&symbol=XAUUSDT",
-            timeout=5.0,
-        )
-        try:
-            if tdata and tdata.get("retCode") == 0:
-                row = tdata["result"]["list"][0]
-                bid = float(row.get("bid1Price") or 0)
-                ask = float(row.get("ask1Price") or 0)
-                if ask > bid > 0:
-                    spread = round(ask - bid, 2)
-        except Exception:
-            pass
-        return self._from_ohlcv_matrix("LIVE_REST_BYBIT_XAUUSDT", ohlcv, spread)
+        # API returns reverse chronological rows.
+        rows = list(reversed(data.get("result", {}).get("list") or []))
+        ohlcv = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+        bid, ask = self._bybit_ticker()
+        return self._build_tick_result("BYBIT_LINEAR", "XAUUSDT", ohlcv, bid, ask)
 
     def _fetch_okx_rest_sync(self) -> Optional[Dict[str, Any]]:
         data = _http_get_json(
-            "https://www.okx.com/api/v5/market/candles?instId=XAU-USDT-SWAP&bar=5m&limit=200"
+            "https://www.okx.com/api/v5/market/candles?instId=XAU-USDT-SWAP"
+            f"&bar={config.TIMEFRAME}&limit=300"
         )
         if not data or data.get("code") != "0":
             return None
-        raw = list(reversed(data.get("data") or []))
-        if len(raw) < 30:
-            return None
-        # OKX: [ts, o, h, l, c, vol, ...]
-        ohlcv = [
-            [float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5] or 0)]
-            for r in raw
-        ]
-        spread = 0.18
-        tdata = _http_get_json(
+        rows = list(reversed(data.get("data") or []))
+        ohlcv = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+        ticker = _http_get_json(
             "https://www.okx.com/api/v5/market/ticker?instId=XAU-USDT-SWAP", timeout=5.0
         )
         try:
-            if tdata and tdata.get("code") == "0":
-                row = tdata["data"][0]
-                bid = float(row.get("bidPx") or 0)
-                ask = float(row.get("askPx") or 0)
-                if ask > bid > 0:
-                    spread = round(ask - bid, 2)
-        except Exception:
-            pass
-        return self._from_ohlcv_matrix("LIVE_REST_OKX_XAU-USDT-SWAP", ohlcv, spread)
+            item = ticker["data"][0]
+            bid, ask = float(item.get("bidPx") or 0), float(item.get("askPx") or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            bid, ask = 0.0, 0.0
+        return self._build_tick_result("OKX_SWAP", "XAU-USDT-SWAP", ohlcv, bid, ask)
 
-    def _fetch_binance_paxg_rest_sync(self) -> Optional[Dict[str, Any]]:
-        data = _http_get_json(
-            "https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=5m&limit=200"
-        )
-        if not data or not isinstance(data, list) or len(data) < 30:
+    def _fetch_ccxt_direct_sync(self) -> Optional[Dict[str, Any]]:
+        if not CCXT_AVAILABLE:
             return None
-        ohlcv = [
-            [float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5] or 0)]
-            for r in data
-        ]
-        spread = 0.20
-        tdata = _http_get_json(
-            "https://api.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
-            timeout=5.0,
-        )
-        try:
-            if tdata:
-                bid = float(tdata.get("bidPrice") or 0)
-                ask = float(tdata.get("askPrice") or 0)
-                if ask > bid > 0:
-                    spread = round(ask - bid, 2)
-        except Exception:
-            pass
-        return self._from_ohlcv_matrix("LIVE_REST_BINANCE_PAXGUSDT", ohlcv, spread)
-
-    def _fetch_gate_paxg_rest_sync(self) -> Optional[Dict[str, Any]]:
-        data = _http_get_json(
-            "https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=PAXG_USDT&interval=5m&limit=200"
-        )
-        if not data or not isinstance(data, list) or len(data) < 30:
-            return None
-        # Gate: [t, v, c, h, l, o, ...]  t is seconds
-        ohlcv = []
-        for r in data:
-            ts = float(r[0]) * 1000 if float(r[0]) < 1e12 else float(r[0])
-            ohlcv.append(
-                [ts, float(r[5]), float(r[3]), float(r[4]), float(r[2]), float(r[1] or 0)]
-            )
-        return self._from_ohlcv_matrix("LIVE_REST_GATE_PAXG_USDT", ohlcv, 0.25)
-
-    def _fetch_live_market_data_sync(self) -> Optional[Dict[str, Any]]:
-        for fn in (
-            self._fetch_via_ccxt_sync,
-            self._fetch_bybit_rest_sync,
-            self._fetch_okx_rest_sync,
-            self._fetch_binance_paxg_rest_sync,
-            self._fetch_gate_paxg_rest_sync,
-        ):
+        # Keep the configured exchange first, then use the other direct venue.
+        venues = [("bybit", "XAU/USDT:USDT"), ("okx", "XAU/USDT:USDT")]
+        venues.sort(key=lambda item: item[0] != config.EXCHANGE_ID.lower())
+        for exchange_id, symbol in venues:
             try:
-                tick = fn()
-                if tick and tick.get("close", 0) > 0:
+                exchange_class = getattr(ccxt, exchange_id)
+                exchange = exchange_class({"timeout": 8000, "enableRateLimit": True})
+                rows = exchange.fetch_ohlcv(symbol, timeframe=config.TIMEFRAME, limit=300)
+                ticker = exchange.fetch_ticker(symbol)
+                bid, ask = float(ticker.get("bid") or 0), float(ticker.get("ask") or 0)
+                tick = self._build_tick_result(
+                    f"CCXT_{exchange_id.upper()}", symbol, rows, bid, ask
+                )
+                if tick:
                     return tick
             except Exception as exc:
-                logger.debug("%s error: %s", fn.__name__, exc)
+                logger.debug("CCXT direct %s unavailable: %s", exchange_id, exc)
+        return None
+
+    def _fetch_paxg_proxy_sync(self) -> Optional[Dict[str, Any]]:
+        if not config.ALLOW_PROXY_FEEDS:
+            return None
+        data = _http_get_json(
+            f"https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval={config.TIMEFRAME}&limit=300"
+        )
+        if not isinstance(data, list):
+            return None
+        ticker = _http_get_json("https://api.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT")
+        try:
+            bid, ask = float(ticker.get("bidPrice") or 0), float(ticker.get("askPrice") or 0)
+        except (AttributeError, TypeError, ValueError):
+            bid, ask = 0.0, 0.0
+        return self._build_tick_result("BINANCE_PAXG_PROXY", "PAXGUSDT", data, bid, ask, is_proxy=True)
+
+    def _fetch_live_market_data_sync(self) -> Optional[Dict[str, Any]]:
+        preferred = [self._fetch_bybit_rest_sync, self._fetch_okx_rest_sync]
+        if config.EXCHANGE_ID.lower() == "okx":
+            preferred.reverse()
+        for fetcher in (*preferred, self._fetch_ccxt_direct_sync, self._fetch_paxg_proxy_sync):
+            try:
+                tick = fetcher()
+                if tick:
+                    return tick
+            except Exception as exc:
+                logger.debug("%s failed: %s", fetcher.__name__, exc)
         return None
 
     async def get_latest_market_tick(self) -> Optional[Dict[str, Any]]:
         loop = asyncio.get_running_loop()
-        live = await loop.run_in_executor(None, self._fetch_live_market_data_sync)
-        if live:
-            logger.info(
-                "Live %s | $%.2f | spr $%.2f | ATR $%.2f | ADX %.1f | Z %.2f | RSI %.1f",
-                live["source"],
-                live["close"],
-                live["spread"],
-                live["atr_14"],
-                live["adx"],
-                live.get("zscore", 0.0),
-                live["rsi_14"],
-            )
-            return live
-        self.consecutive_failures += 1
-        logger.warning(
-            "All live endpoints failed (streak=%s). No synthetic fallback.",
-            self.consecutive_failures,
+        tick = await loop.run_in_executor(None, self._fetch_live_market_data_sync)
+        if not tick:
+            self.consecutive_failures += 1
+            logger.warning("No valid live XAU feed (streak=%d); no synthetic fallback", self.consecutive_failures)
+            return None
+        logger.info(
+            "Closed %s %s | $%.2f | spr $%.3f | ATR $%.2f | ADX %.1f | Z %.2f",
+            tick["source"],
+            tick["bar_closed_at"],
+            tick["close"],
+            tick["spread"],
+            tick["atr_14"],
+            tick["adx"],
+            tick["zscore"],
         )
-        return None
+        return tick
 
 
 market_feed = LiveMarketDataFeed()

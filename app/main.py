@@ -90,6 +90,13 @@ async def heartbeat_loop() -> None:
 
 async def main() -> None:
     global _shutdown_event
+    # This repository currently has a paper executor only.  Refuse to start in
+    # a misleading "LIVE" mode until a separately reviewed ApeX adapter exists.
+    if not config.PAPER_TRADING:
+        raise RuntimeError(
+            "PAPER_TRADING=false is blocked: no live ApeX execution adapter is installed. "
+            "Keep PAPER_TRADING=true for this deployment."
+        )
     _shutdown_event = asyncio.Event()
 
     logger.info("=" * 64)

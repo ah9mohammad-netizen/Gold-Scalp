@@ -19,6 +19,14 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
+try:
+    # Local convenience only; Railway variables always take precedence.
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
+except ImportError:  # pragma: no cover - Railway installs requirements.txt
+    pass
+
 
 def _env_bool(key: str, default: str = "false") -> bool:
     return os.getenv(key, default).lower() in ("true", "1", "yes", "on")
@@ -132,8 +140,11 @@ class AppConfig:
     ENABLE_ASIA_BREAKOUT: bool = _env_bool("ENABLE_ASIA_BREAKOUT", "false")
     ENABLE_NY_ORB: bool = _env_bool("ENABLE_NY_ORB", "false")
 
-    # Cost / vol
+    # Cost / vol.  Fees and slippage are deliberately simulated in paper mode;
+    # a mid-price-only ledger is not suitable for deciding whether to go live.
     ROUND_TRIP_COST_USD: float = float(os.getenv("ROUND_TRIP_COST_USD", "0.40"))
+    PAPER_TAKER_FEE_RATE: float = float(os.getenv("PAPER_TAKER_FEE_RATE", "0.0004"))
+    PAPER_SLIPPAGE_USD: float = float(os.getenv("PAPER_SLIPPAGE_USD", "0.03"))
     MIN_SL_COST_MULTIPLE: float = float(os.getenv("MIN_SL_COST_MULTIPLE", "5.0"))
     MIN_TP_COST_MULTIPLE: float = float(os.getenv("MIN_TP_COST_MULTIPLE", "8.0"))
     MIN_ATR_USD: float = float(os.getenv("MIN_ATR_USD", "0.80"))
@@ -160,6 +171,13 @@ class AppConfig:
 
     PAPER_TRADING: bool = _env_bool("PAPER_TRADING", "true")
     POLL_INTERVAL_SECONDS: float = float(os.getenv("POLL_INTERVAL_SECONDS", "5.0"))
+    # A candle may be evaluated only after it closes.  This removes look-ahead
+    # bias and prevents a 5-second polling loop from acting on the same bar.
+    ONLY_CLOSED_CANDLES: bool = _env_bool("ONLY_CLOSED_CANDLES", "true")
+    MAX_DATA_STALENESS_SECONDS: float = float(os.getenv("MAX_DATA_STALENESS_SECONDS", "900"))
+    # PAXG is correlated with gold, but it is not XAU-USDT. Never switch to it
+    # silently; enable this only when deliberately running a proxy experiment.
+    ALLOW_PROXY_FEEDS: bool = _env_bool("ALLOW_PROXY_FEEDS", "false")
 
     APEX_API_KEY: str = os.getenv("APEX_API_KEY", "")
     APEX_API_SECRET: str = os.getenv("APEX_API_SECRET", "")
@@ -170,6 +188,16 @@ class AppConfig:
             self.DATABASE_URL = _resolve_database_url(self.DB_PATH)
         if os.getenv("TP_RR_RATIO") and not os.getenv("TP2_RR_RATIO"):
             self.TP2_RR_RATIO = self.TP_RR_RATIO
+        if self.INITIAL_BALANCE_USDT <= 0:
+            raise ValueError("PAPER_BALANCE must be greater than zero")
+        if not 0 < self.RISK_PER_TRADE_PCT <= 5:
+            raise ValueError("RISK_PER_TRADE_PCT must be in (0, 5]")
+        if not 1 <= self.MAX_LEVERAGE <= 75:
+            raise ValueError("MAX_LEVERAGE must be in [1, 75]")
+        if not 0 < self.MARGIN_CAP_PCT <= 100:
+            raise ValueError("MARGIN_CAP_PCT must be in (0, 100]")
+        if self.PAPER_TAKER_FEE_RATE < 0 or self.PAPER_SLIPPAGE_USD < 0:
+            raise ValueError("Paper fees and slippage cannot be negative")
 
 
 config = AppConfig()

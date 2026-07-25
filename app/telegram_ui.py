@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import urllib.error
 import urllib.request
 import uuid
@@ -221,30 +222,41 @@ class TelegramUI:
 
         elif cmd_lower in ("/get_db", "/export_db", "/download_data", "/history"):
             st = db.get_statistics()
-            path = db.db_path
-            if not os.path.exists(path):
+            if not os.path.exists(db.db_path):
                 await self.send_message(
-                    f"❌ Database file not found at <code>{path}</code>",
-                    chat_id=chat_id,
+                    f"❌ Database file not found at <code>{db.db_path}</code>", chat_id=chat_id
                 )
                 return
-            size_kb = os.path.getsize(path) / 1024.0
-            caption = (
-                "📦 <b>XAU-USDT Trading History (`history.db`)</b>\n\n"
-                f"• Path: <code>{path}</code>\n"
-                f"• Size: <b>{size_kb:.1f} KB</b>\n"
-                f"• Closed trades: <b>{st['total_trades']}</b>\n"
-                f"• Equity: <b>${st['current_balance']:.2f} USDT</b>\n"
-                "💡 Open with DB Browser for SQLite / DBeaver / pandas to optimize the strategy."
-            )
-            await self.send_message(
-                "⏳ Uploading <code>history.db</code> from Railway Volume...",
-                chat_id=chat_id,
-            )
-            await self.send_document(path, caption=caption, chat_id=chat_id)
+            # SQLite WAL keeps recent writes in history.db-wal. Export a backup,
+            # rather than uploading only the main file and losing recent records.
+            try:
+                snapshot = db.create_export_snapshot()
+                size_kb = os.path.getsize(snapshot) / 1024.0
+                caption = (
+                    "📦 <b>XAU-USDT Trading History (`history.db`)</b>\n\n"
+                    f"• Persistent path: <code>{db.db_path}</code>\n"
+                    f"• Consistent export: <b>{size_kb:.1f} KB</b>\n"
+                    f"• Closed trades: <b>{st['total_trades']}</b>\n"
+                    f"• Realized balance: <b>${st['current_balance']:.2f} USDT</b>\n"
+                    "Includes signals, fills, fee/slippage fields and account history."
+                )
+                await self.send_message(
+                    "⏳ Creating and uploading a consistent <code>history.db</code> snapshot...",
+                    chat_id=chat_id,
+                )
+                await self.send_document(snapshot, caption=caption, chat_id=chat_id)
+            except Exception as exc:
+                logger.exception("Database export failed")
+                await self.send_message(f"❌ DB export failed: <code>{exc}</code>", chat_id=chat_id)
+            finally:
+                if 'snapshot' in locals():
+                    # A reader can briefly create SQLite sidecar files; remove
+                    # the dedicated temporary export directory as a whole.
+                    shutil.rmtree(os.path.dirname(snapshot), ignore_errors=True)
 
         elif cmd_lower == "/status":
             open_trades = db.get_open_trades()
+            snapshot = db.get_account_snapshot(market_feed.last_known_price)
             size_kb = (
                 os.path.getsize(db.db_path) / 1024.0 if os.path.exists(db.db_path) else 0.0
             )
@@ -262,7 +274,9 @@ class TelegramUI:
                 f"• New entries: <b>{'🟢 ON' if paper_trader.new_entries_enabled else '🟡 PAUSED'}</b>\n"
                 f"• Symbol: <b>{config.SYMBOL}</b> · Lev <b>{config.MAX_LEVERAGE}x</b>\n"
                 f"• Last price: <b>{price_str}</b>{tick_age}\n"
-                f"• Feed: <b>{market_feed.last_valid_source}</b>\n"
+                f"• Feed: <b>{market_feed.last_valid_source}</b> "
+                f"(<code>{lt.get('source_symbol', 'n/a')}</code>)\n"
+                f"• Closed bar: <code>{lt.get('bar_closed_at', 'waiting')}</code>\n"
                 f"• ADX: <b>{float(lt.get('adx', 0)):.1f}</b> · "
                 f"Z: <b>{float(lt.get('zscore', 0)):.2f}</b> · "
                 f"ATR: <b>${float(lt.get('atr_14', 0)):.2f}</b>\n"
@@ -271,23 +285,29 @@ class TelegramUI:
                 f"<b>{db.count_trades_opened_today()}/{config.MAX_TRADES_PER_DAY}</b>\n"
                 f"• Risk: <b>{config.RISK_PER_TRADE_PCT}%</b> · "
                 f"TP <b>{config.TP_RR_RATIO:.1f}R</b> · SL {config.SL_ATR_MULTIPLIER}×ATR\n"
+                f"• Equity: <b>${snapshot['equity']:.2f}</b> (open PnL ${snapshot['unrealized_pnl_usd']:+.2f})\n"
                 f"• DB: <code>{db.db_path}</code> ({size_kb:.1f} KB)"
             )
             await self.send_message(msg, chat_id=chat_id)
 
         elif cmd_lower == "/balance":
-            bal = db.get_current_balance()
-            pnl = bal - config.INITIAL_BALANCE_USDT
-            ret = (pnl / config.INITIAL_BALANCE_USDT) * 100.0
+            account = db.get_account_snapshot(market_feed.last_known_price)
+            initial = db.get_initial_balance()
+            pnl = account["balance"] - initial
+            ret = (pnl / initial) * 100.0 if initial else 0.0
             day_pnl = db.get_daily_realized_pnl()
             msg = (
                 "💰 <b>Paper Trading Account</b>\n\n"
-                f"• Initial: <b>${config.INITIAL_BALANCE_USDT:.2f} USDT</b>\n"
-                f"• Current: <b>${bal:.2f} USDT</b>\n"
-                f"• Total PnL: <b>${pnl:+.2f} ({ret:+.2f}%)</b>\n"
+                f"• Initial: <b>${initial:.2f} USDT</b>\n"
+                f"• Realized balance: <b>${account['balance']:.2f} USDT</b>\n"
+                f"• Open PnL (fee-aware): <b>${account['unrealized_pnl_usd']:+.2f}</b>\n"
+                f"• Marked equity: <b>${account['equity']:.2f}</b>\n"
+                f"• Used / free margin: <b>${account['used_margin_usd']:.2f}</b> / "
+                f"<b>${account['free_margin_usd']:.2f}</b>\n"
+                f"• Realized total: <b>${pnl:+.2f} ({ret:+.2f}%)</b>\n"
                 f"• Today realized: <b>${day_pnl:+.2f}</b>\n"
                 f"• Risk / trade: <b>{config.RISK_PER_TRADE_PCT}% "
-                f"(~${bal * config.RISK_PER_TRADE_PCT / 100:.2f})</b>"
+                f"(~${account['equity'] * config.RISK_PER_TRADE_PCT / 100:.2f})</b>"
             )
             await self.send_message(msg, chat_id=chat_id)
 
@@ -302,10 +322,12 @@ class TelegramUI:
             for s in signals:
                 ts = s["timestamp"]
                 dt = ts.split("T")[1][:8] if "T" in ts else ts[:19]
+                z = s.get("zscore")
+                z_text = f" | Z {float(z):+.2f}" if z is not None else ""
                 lines.append(
                     f"• [{dt}] <b>{s['direction']}</b> @ ${float(s['entry_price']):.2f} "
-                    f"| SL ${float(s['sl_price']):.2f} | TP1 ${float(s['tp1_price']):.2f} "
-                    f"| <b>{s['status']}</b>"
+                    f"| SL ${float(s['sl_price']):.2f} | TP ${float(s['tp2_price']):.2f}"
+                    f"{z_text} | <b>{s['status']}</b>"
                 )
             await self.send_message("\n".join(lines), chat_id=chat_id)
 
@@ -354,8 +376,9 @@ class TelegramUI:
                 f"(W {st['wins']} / L {st['losses']})\n"
                 f"• Win rate: <b>{st['win_rate']}%</b>\n"
                 f"• Profit factor: <b>{st['profit_factor']}</b>\n"
-                f"• Total PnL: <b>${st['total_pnl_usd']:+.2f} "
+                f"• Net PnL: <b>${st['total_pnl_usd']:+.2f} "
                 f"({st['total_return_pct']:+.2f}%)</b>\n"
+                f"• Simulated fees: <b>${st['total_fees_usd']:.2f}</b>\n"
                 f"• Best / Worst: <b>${st['best_trade_usd']:+.2f}</b> / "
                 f"<b>${st['worst_trade_usd']:+.2f}</b>\n"
                 f"• Equity: <b>${st['current_balance']:.2f}</b> / "
@@ -396,6 +419,7 @@ class TelegramUI:
             base = market_feed.last_tick or {}
             dummy = {
                 "timestamp": datetime.now(timezone.utc),
+                "source": "TELEGRAM_FORCE",
                 "close": px,
                 "open": px - 0.5 if direction == "LONG" else px + 0.5,
                 "spread": float(base.get("spread", 0.15)),
@@ -429,7 +453,7 @@ class TelegramUI:
             }
             paper_trader.process_new_market_data(dummy)
             await self.send_message(
-                f"🧪 Forced <b>{direction}</b> test (v5) at live ${px:.2f}.",
+                f"🧪 Forced <b>{direction}</b> paper test (v5) at last closed ${px:.2f}.",
                 chat_id=chat_id,
             )
 

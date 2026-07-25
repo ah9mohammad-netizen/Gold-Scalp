@@ -391,8 +391,13 @@ class LayeredDecisionEngine:
         ts = current_time.isoformat()
         plan: Dict[str, Any] = {
             "timestamp": ts,
+            "bar_timestamp_ms": market_data.get("bar_timestamp_ms"),
+            "source": market_data.get("source", "UNKNOWN"),
             "symbol": config.SYMBOL,
             "direction": bias,
+            # ``entry_price`` is the reference close. The paper executor replaces
+            # it with a bid/ask + slippage-adjusted fill before persistence.
+            "reference_price": round(price, 4),
             "entry_price": round(price, 2),
             "sl_price": sl_price,
             "tp1_price": tp1_price,
@@ -407,7 +412,9 @@ class LayeredDecisionEngine:
             "tp_rr": config.TP_RR_RATIO,
             "trail_atr_mult": config.TRAIL_ATR_MULTIPLIER,
             "atr_at_entry": atr,
+            "spread": round(spread, 4),
             "zscore": round(zscore, 3),
+            "adx": round(adx, 3),
             "layer1_regime": f"h={utc_hour:02d}UTC spr=${spread:.2f} ADX={adx:.1f}",
             "layer2_structure": f"[{setup_name}] {layer4_reason}",
             "layer3_momentum": f"ATR=${atr:.2f} Z={zscore:.2f} RSI={rsi:.1f} SMA=${sma:.2f}",
