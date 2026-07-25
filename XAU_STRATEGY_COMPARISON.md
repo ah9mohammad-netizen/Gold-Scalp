@@ -59,29 +59,45 @@ The MTF report and full candidate output are here:
 
 ---
 
+## Phase 4A — calendar-only event veto
+
+The user-supplied ForexFactory-style calendar covers August 2023 onward. Its display timestamps were verified as `Asia/Tehran` and converted through the IANA timezone database to UTC. The MTF trend strategy was held fixed while only a 30/30 or 60/60 minute no-entry window around predeclared USD event bundles changed.
+
+| Calendar-covered window | No veto | Development-selected extended USD 30/30 veto | Decision |
+|---|---|---|---|
+| Development: 2023-08 to 2024-06 | −31.02%, PF 0.44 | −30.06%, PF 0.44 | Negligible improvement; reject. |
+| Validation: 2024-07 to 2024-12 | −42.55%, PF 0.28 | −41.44%, PF 0.29 | Negligible improvement; reject. |
+| Holdout: 2025-01 to 2026-01 | −61.24%, PF 0.34 | −59.24%, PF 0.36 | Slightly less bad, still decisively negative. |
+
+The core CPI/NFP/PPI/FOMC veto did not alter closed-trade results because the MTF trigger rarely coincided with those narrow windows; the broader calendar removed some triggers but did not repair the underlying setup. This proves that event avoidance is a **risk-control layer**, not a source of directional edge by itself.
+
+See [`XAU_EVENT_VETO_RESEARCH.md`](XAU_EVENT_VETO_RESEARCH.md) and [`XAU_EVENT_VETO_RESEARCH.csv`](XAU_EVENT_VETO_RESEARCH.csv).
+
+---
+
 ## What remains worth testing
 
-We should not retune EMA periods, stop multipliers, or target R values on these holdout results. The next candidate needs **new information**, not another variation of price-only rules.
+We should not retune EMA periods, stop multipliers, target R values, or event-window sizes against these holdout results. The next candidate needs **new information**, not another variation of price-only rules.
 
-### Next research family: macro-vetoed, event-aware trend continuation
+### Next research family: daily macro regime plus stricter continuation structure
 
-Use the existing M5 data plus freely available daily macro regime series and official event times:
+Use the existing M5 data plus daily macro regime series:
 
 ```text
 Daily regime:
     10Y real yield, 10Y/2Y yield direction, broad USD index, VIX, oil
 
 Event veto:
-    no entries around CPI, Employment Situation/NFP, FOMC, PCE, PPI
+    retain the fixed calendar no-entry layer as risk control
 
 Trend setup:
-    use higher-timeframe direction only after macro/event state allows it
+    permit the strategy only when macro state and higher-timeframe direction agree
 
 M15/M5 entry:
-    require a stricter continuation/reclaim pattern than a one-bar M5 break
+    replace the one-bar M5 break with a stricter continuation/reclaim structure
 ```
 
-This does not imply that macro factors predict every intraday move. They are first used to avoid entering in known hostile environments.
+This does not imply that macro factors predict every intraday move. They are first used to classify or avoid hostile environments.
 
 ---
 

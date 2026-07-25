@@ -24,6 +24,7 @@ import csv
 import glob
 import math
 import sys
+from bisect import bisect_left
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -102,6 +103,7 @@ class Result:
     profit_factor: Optional[float]
     max_drawdown: float
     fees: float
+    vetoed_entries: int
     examples: List[str]
 
     def row(self) -> Dict[str, object]:
@@ -119,6 +121,7 @@ class Result:
                 "profit_factor": self.profit_factor,
                 "max_realized_drawdown": round(self.max_drawdown, 4),
                 "fees": round(self.fees, 4),
+                "vetoed_entries": self.vetoed_entries,
                 "example_entries": "; ".join(self.examples),
             }
         )
@@ -305,6 +308,21 @@ def in_window(timestamp: datetime, start: datetime, end: Optional[datetime]) -> 
     return timestamp >= start and (end is None or timestamp < end)
 
 
+def event_veto_active(
+    timestamp: datetime, event_times: Sequence[datetime], pre_minutes: int, post_minutes: int
+) -> bool:
+    """Check a UTC timestamp against a sorted event list in logarithmic time."""
+    if not event_times or (pre_minutes <= 0 and post_minutes <= 0):
+        return False
+    index = bisect_left(event_times, timestamp)
+    for candidate_index in (index - 1, index):
+        if 0 <= candidate_index < len(event_times):
+            event = event_times[candidate_index]
+            if event - timedelta(minutes=pre_minutes) <= timestamp <= event + timedelta(minutes=post_minutes):
+                return True
+    return False
+
+
 def simulate(
     bars: Sequence[Bar],
     m15_states: Dict[datetime, TrendState],
@@ -322,6 +340,9 @@ def simulate(
     session_end_hour: int,
     flat_hour: int,
     window_name: str,
+    event_times: Sequence[datetime] = (),
+    event_pre_minutes: int = 0,
+    event_post_minutes: int = 0,
 ) -> Result:
     indicators = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     initial = balance = peak = float(config.INITIAL_BALANCE_USDT)
@@ -334,6 +355,7 @@ def simulate(
     m15_state: Optional[TrendState] = None
     pullback: Optional[Pullback] = None
     traded_day = ""
+    vetoed_entries = 0
     examples: List[str] = []
 
     for index, bar in enumerate(bars):
@@ -422,6 +444,14 @@ def simulate(
         )
         if not trigger:
             continue
+        if event_veto_active(
+            decision_time, event_times, event_pre_minutes, event_post_minutes
+        ):
+            vetoed_entries += 1
+            # A setup that cannot be acted upon inside a news window is not
+            # carried forward as a stale post-event entry.
+            pullback = None
+            continue
         position = fill_position(
             bar,
             pullback.direction,
@@ -452,6 +482,7 @@ def simulate(
         profit_factor=(gross_profit / gross_loss) if gross_loss else None,
         max_drawdown=max_drawdown,
         fees=fees,
+        vetoed_entries=vetoed_entries,
         examples=examples,
     )
 
