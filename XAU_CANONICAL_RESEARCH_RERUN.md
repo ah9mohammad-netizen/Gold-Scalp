@@ -67,13 +67,33 @@ under the current fixed-cost model and canonical UTC data.
 
 It does **not** prove that no XAU strategy can work.
 
+## Execution-cost sensitivity
+
+A fixed-signal v5 diagnostic held the decision spread/gate at $0.40 and varied only execution spread, fee, and slippage. It does **not** promote v5; it identifies whether fees are the entire explanation.
+
+| Friction scenario | Development | Validation | Holdout | Interpretation |
+|---|---|---|---|---|
+| Zero execution friction | −7.58%, PF 0.50 | +2.60%, PF 1.35 | +7.67%, PF 1.46 | No robust all-window gross edge; development remains negative. |
+| Low friction ($0.10 spread, 0.01%/side, $0.01 slip) | −8.79%, PF 0.45 | +1.59%, PF 1.20 | +1.93%, PF 1.10 | Later periods can clear low assumed cost, but development still fails. |
+| Moderate friction ($0.20, 0.02%/side, $0.02) | −10.04%, PF 0.41 | +1.24%, PF 1.16 | −3.71%, PF 0.82 | Not robust. |
+| Current model ($0.40, 0.04%/side, $0.03) | −12.07%, PF 0.35 | −0.32%, PF 0.96 | −7.92%, PF 0.65 | Reject. |
+
+This confirms two things at once:
+
+```text
+The current cost assumption is material.
+But lower cost does not turn v5 into a robust all-period framework.
+```
+
+Actual Apex contract fees, price multiplier, and order-price behavior are still required before any final execution decision.
+
 ## Remaining evidence-quality tasks
 
 1. Validate the actual fee, contract multiplier, and order-price model on the intended execution venue.
 2. Keep canonical UTC conversion for every source; never assume chart timestamps are UTC without overlap validation.
 3. Maintain the gap guard in all future research.
 4. Preserve the M1 repair provenance and never overwrite original source bars.
-5. Do a fee-sensitivity study before rejecting any low-frequency strategy solely on the current 0.04%-per-side fee assumption.
+5. Keep cost sensitivity as a diagnostic, not an optimization target; a strategy must be positive under realistic fees across development, validation, and holdout.
 
 ## Linked detailed reports
 
@@ -85,3 +105,4 @@ It does **not** prove that no XAU strategy can work.
 - [`XAU_EVENT_VETO_CANONICAL.md`](XAU_EVENT_VETO_CANONICAL.md)
 - [`XAU_DAILY_MACRO_REGIME_CANONICAL.md`](XAU_DAILY_MACRO_REGIME_CANONICAL.md)
 - [`XAU_IMPULSE_RECLAIM_CANONICAL.md`](XAU_IMPULSE_RECLAIM_CANONICAL.md)
+- [`XAU_COST_SENSITIVITY.md`](XAU_COST_SENSITIVITY.md)

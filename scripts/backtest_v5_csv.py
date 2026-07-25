@@ -238,27 +238,36 @@ def load_csv_parts(patterns: Sequence[str]) -> List[Bar]:
     return deduplicated
 
 
-def paper_fill(plan: Dict[str, float], bar: Bar, balance: float, spread: float) -> Optional[Position]:
-    """Apply the same entry transformation as PaperTradingEngine."""
+def paper_fill(
+    plan: Dict[str, float],
+    bar: Bar,
+    balance: float,
+    spread: float,
+    fee_rate: Optional[float] = None,
+    slippage: Optional[float] = None,
+) -> Optional[Position]:
+    """Apply configurable execution friction to a reference-close setup."""
+    fee_rate = config.PAPER_TAKER_FEE_RATE if fee_rate is None else fee_rate
+    slippage = config.PAPER_SLIPPAGE_USD if slippage is None else slippage
     reference = float(plan["entry_price"])
     half_spread = spread / 2.0
     entry = (
-        reference + half_spread + config.PAPER_SLIPPAGE_USD
+        reference + half_spread + slippage
         if plan["direction"] == "LONG"
-        else reference - half_spread - config.PAPER_SLIPPAGE_USD
+        else reference - half_spread - slippage
     )
     sl_distance = float(plan["sl_distance"])
     target_distance = sl_distance * config.TP_RR_RATIO
     size = float(plan["size_oz"])
     margin = entry * size / config.MAX_LEVERAGE
-    entry_fee = entry * size * config.PAPER_TAKER_FEE_RATE
+    entry_fee = entry * size * fee_rate
     margin_cap = balance * config.MARGIN_CAP_PCT / 100.0
     if margin > margin_cap:
         size = round(margin_cap * config.MAX_LEVERAGE / entry, 4)
         if size < 0.01:
             return None
         margin = entry * size / config.MAX_LEVERAGE
-        entry_fee = entry * size * config.PAPER_TAKER_FEE_RATE
+        entry_fee = entry * size * fee_rate
     if entry <= 0 or margin + entry_fee > balance:
         return None
     if plan["direction"] == "LONG":
@@ -283,13 +292,16 @@ def paper_fill(plan: Dict[str, float], bar: Bar, balance: float, spread: float) 
     )
 
 
-def exit_position(position: Position, bar: Bar, spread: float) -> Optional[tuple[float, str]]:
+def exit_position(
+    position: Position, bar: Bar, spread: float, slippage: Optional[float] = None
+) -> Optional[tuple[float, str]]:
     """Resolve the next candle with bid/ask range and conservative stop priority.
 
     Excursion fields are updated from executable quotes. ``mfe_before_exit`` is
     deliberately captured before the current bar so it does not invent an
     intrabar path on an OHLC candle that also hit the stop.
     """
+    slippage = config.PAPER_SLIPPAGE_USD if slippage is None else slippage
     half = spread / 2.0
     position.mfe_before_exit_price = max(position.mfe_before_exit_price, position.mfe_price)
     position.bars_held += 1
@@ -301,9 +313,9 @@ def exit_position(position: Position, bar: Bar, spread: float) -> Optional[tuple
         position.mae_price = max(position.mae_price, adverse)
         position.ambiguous_ohlc_exit = hit_stop and hit_target
         if hit_stop:
-            return min(position.stop, executable_low) - config.PAPER_SLIPPAGE_USD, "SL_HIT"
+            return min(position.stop, executable_low) - slippage, "SL_HIT"
         if hit_target:
-            return position.target - config.PAPER_SLIPPAGE_USD, "TP_HIT"
+            return position.target - slippage, "TP_HIT"
     else:
         executable_high, executable_low = bar.high + half, bar.low + half
         favorable, adverse = position.entry - executable_low, executable_high - position.entry
@@ -312,9 +324,9 @@ def exit_position(position: Position, bar: Bar, spread: float) -> Optional[tuple
         position.mae_price = max(position.mae_price, adverse)
         position.ambiguous_ohlc_exit = hit_stop and hit_target
         if hit_stop:
-            return max(position.stop, executable_high) + config.PAPER_SLIPPAGE_USD, "SL_HIT"
+            return max(position.stop, executable_high) + slippage, "SL_HIT"
         if hit_target:
-            return position.target + config.PAPER_SLIPPAGE_USD, "TP_HIT"
+            return position.target + slippage, "TP_HIT"
     return None
 
 
@@ -324,7 +336,13 @@ def run_window(
     end: Optional[datetime],
     spread: float,
     gap_guard: Optional[GapGuard] = None,
+    execution_spread: Optional[float] = None,
+    fee_rate: Optional[float] = None,
+    slippage: Optional[float] = None,
 ) -> Dict[str, object]:
+    execution_spread = spread if execution_spread is None else execution_spread
+    fee_rate = config.PAPER_TAKER_FEE_RATE if fee_rate is None else fee_rate
+    slippage = config.PAPER_SLIPPAGE_USD if slippage is None else slippage
     indicator = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     balance = float(config.INITIAL_BALANCE_USDT)
     initial = balance
@@ -349,13 +367,13 @@ def run_window(
 
         # Manage a position first. A new signal cannot use its own OHLC range.
         if position is not None:
-            outcome = exit_position(position, bar, spread)
+            outcome = exit_position(position, bar, execution_spread, slippage=slippage)
             if outcome is None and gap_guard is not None and gap_guard.force_flat_after(bar.timestamp):
-                half = spread / 2.0
+                half = execution_spread / 2.0
                 exit_price = (
-                    bar.close - half - config.PAPER_SLIPPAGE_USD
+                    bar.close - half - slippage
                     if position.direction == "LONG"
-                    else bar.close + half + config.PAPER_SLIPPAGE_USD
+                    else bar.close + half + slippage
                 )
                 outcome = (exit_price, "DATA_GAP_EXIT")
             if outcome:
@@ -365,7 +383,7 @@ def run_window(
                     if position.direction == "LONG"
                     else (position.entry - exit_price) * position.size
                 )
-                exit_fee = exit_price * position.size * config.PAPER_TAKER_FEE_RATE
+                exit_fee = exit_price * position.size * fee_rate
                 net = gross - position.entry_fee - exit_fee
                 balance = max(0.0, balance + net)
                 peak = max(peak, balance)
@@ -466,7 +484,7 @@ def run_window(
         if plan:
             plan["adx"] = indicators["adx"]
             plan["atr_ratio"] = indicators["atr_14"] / indicators["atr_avg"] if indicators["atr_avg"] else 0.0
-            candidate = paper_fill(plan, bar, balance, spread)
+            candidate = paper_fill(plan, bar, balance, execution_spread, fee_rate=fee_rate, slippage=slippage)
             if candidate:
                 position = candidate
                 daily_counts[date_key] = daily_counts.get(date_key, 0) + 1
