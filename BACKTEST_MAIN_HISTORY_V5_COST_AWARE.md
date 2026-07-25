@@ -26,4 +26,4 @@ Important limitations: the CSV has no bid/ask or funding data, timestamps lack a
 
 ## Machine-readable output
 
-The companion JSON file contains every closed trade with entry/exit, gross PnL, fees, net PnL, Z-score, ADX, and balance after close.
+The companion JSON and trade-audit CSV contain every closed trade with entry/exit, gross PnL, fees, net PnL, Z-score, ADX, excursions, and balance after close.

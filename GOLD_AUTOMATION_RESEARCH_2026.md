@@ -145,7 +145,7 @@ A reproducible run was performed on the five supplied main-branch 5-minute CSV p
 
 The 2022–2023 segment has one trade, so its positive number has no evidential value. The full and recent segments are negative. **This baseline therefore fails the go-live gate.** Keep it in paper research mode; do not interpret a previous favourable report or a short forward streak as sufficient contrary evidence.
 
-See [`BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md`](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) for assumptions, limits, and the exact reproduction command in [`scripts/backtest_v5_csv.py`](scripts/backtest_v5_csv.py).
+See [`BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md`](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) for assumptions and the exact reproduction command in [`scripts/backtest_v5_csv.py`](scripts/backtest_v5_csv.py). The per-trade audit, failure taxonomy, and deliberately rejected walk-forward parameter search are in [`TRADE_FORENSICS_AND_OPTIMIZATION.md`](TRADE_FORENSICS_AND_OPTIMIZATION.md).
 
 ## 7. Practical next experiments, in priority order
 

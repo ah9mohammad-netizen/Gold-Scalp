@@ -69,6 +69,13 @@ class Position:
     sl_distance: float
     zscore: float
     adx: float
+    atr: float
+    atr_ratio: float
+    bars_held: int = 0
+    mfe_price: float = 0.0
+    mae_price: float = 0.0
+    mfe_before_exit_price: float = 0.0
+    ambiguous_ohlc_exit: bool = False
 
 
 class WilderIndicators:
@@ -243,23 +250,42 @@ def paper_fill(plan: Dict[str, float], bar: Bar, balance: float, spread: float) 
         sl_distance=sl_distance,
         zscore=float(plan.get("zscore", 0.0)),
         adx=float(plan.get("adx", 0.0)),
+        atr=float(plan.get("atr_at_entry", 0.0)),
+        atr_ratio=float(plan.get("atr_ratio", 0.0)),
     )
 
 
 def exit_position(position: Position, bar: Bar, spread: float) -> Optional[tuple[float, str]]:
-    """Resolve the next candle with bid/ask range and conservative stop priority."""
+    """Resolve the next candle with bid/ask range and conservative stop priority.
+
+    Excursion fields are updated from executable quotes. ``mfe_before_exit`` is
+    deliberately captured before the current bar so it does not invent an
+    intrabar path on an OHLC candle that also hit the stop.
+    """
     half = spread / 2.0
+    position.mfe_before_exit_price = max(position.mfe_before_exit_price, position.mfe_price)
+    position.bars_held += 1
     if position.direction == "LONG":
         executable_high, executable_low = bar.high - half, bar.low - half
-        if executable_low <= position.stop:
+        favorable, adverse = executable_high - position.entry, position.entry - executable_low
+        hit_stop, hit_target = executable_low <= position.stop, executable_high >= position.target
+        position.mfe_price = max(position.mfe_price, favorable)
+        position.mae_price = max(position.mae_price, adverse)
+        position.ambiguous_ohlc_exit = hit_stop and hit_target
+        if hit_stop:
             return min(position.stop, executable_low) - config.PAPER_SLIPPAGE_USD, "SL_HIT"
-        if executable_high >= position.target:
+        if hit_target:
             return position.target - config.PAPER_SLIPPAGE_USD, "TP_HIT"
     else:
         executable_high, executable_low = bar.high + half, bar.low + half
-        if executable_high >= position.stop:
+        favorable, adverse = position.entry - executable_low, executable_high - position.entry
+        hit_stop, hit_target = executable_high >= position.stop, executable_low <= position.target
+        position.mfe_price = max(position.mfe_price, favorable)
+        position.mae_price = max(position.mae_price, adverse)
+        position.ambiguous_ohlc_exit = hit_stop and hit_target
+        if hit_stop:
             return max(position.stop, executable_high) + config.PAPER_SLIPPAGE_USD, "SL_HIT"
-        if executable_low <= position.target:
+        if hit_target:
             return position.target + config.PAPER_SLIPPAGE_USD, "TP_HIT"
     return None
 
@@ -321,6 +347,29 @@ def run_window(bars: Iterable[Bar], start: Optional[datetime], end: Optional[dat
                         "sl_distance": round(position.sl_distance, 4),
                         "zscore": round(position.zscore, 4),
                         "adx": round(position.adx, 4),
+                        "atr": round(position.atr, 4),
+                        "atr_ratio": round(position.atr_ratio, 4),
+                        "entry_hour_utc": position.opened_at.hour,
+                        "turn_confirmed": True,
+                        "bars_held": position.bars_held,
+                        "mfe_r": round(position.mfe_price / position.sl_distance, 4),
+                        "mae_r": round(position.mae_price / position.sl_distance, 4),
+                        "mfe_before_exit_r": round(position.mfe_before_exit_price / position.sl_distance, 4),
+                        "ambiguous_ohlc_exit": position.ambiguous_ohlc_exit,
+                        "stop_overshoot_r": round(
+                            max(0.0, position.mae_price / position.sl_distance - 1.0), 4
+                        ),
+                        "diagnosis_tag": (
+                            "TP_CONFIRMED_REVERSAL"
+                            if reason == "TP_HIT"
+                            else "NO_REVERSAL"
+                            if position.mfe_before_exit_price / position.sl_distance < 0.25
+                            else "WEAK_REVERSAL"
+                            if position.mfe_before_exit_price / position.sl_distance < 0.5
+                            else "PARTIAL_REVERSAL"
+                            if position.mfe_before_exit_price / position.sl_distance < 1.0
+                            else "GAVE_BACK_AFTER_1R"
+                        ),
                         "gross_pnl_usd": round(gross, 6),
                         "entry_fee_usd": round(position.entry_fee, 6),
                         "exit_fee_usd": round(exit_fee, 6),
@@ -372,6 +421,7 @@ def run_window(bars: Iterable[Bar], start: Optional[datetime], end: Optional[dat
         plan = engine.evaluate(tick, balance)
         if plan:
             plan["adx"] = indicators["adx"]
+            plan["atr_ratio"] = indicators["atr_14"] / indicators["atr_avg"] if indicators["atr_avg"] else 0.0
             candidate = paper_fill(plan, bar, balance, spread)
             if candidate:
                 position = candidate
@@ -465,10 +515,47 @@ def write_report(
             "",
             "## Machine-readable output",
             "",
-            "The companion JSON file contains every closed trade with entry/exit, gross PnL, fees, net PnL, Z-score, ADX, and balance after close.",
+            "The companion JSON and trade-audit CSV contain every closed trade with entry/exit, gross PnL, fees, net PnL, Z-score, ADX, excursions, and balance after close.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_trade_audit_csv(path: Path, trades: Sequence[Dict[str, object]]) -> None:
+    """Write an analyst-friendly row for every closed full-sample trade."""
+    fieldnames = [
+        "opened_at",
+        "closed_at",
+        "direction",
+        "entry_hour_utc",
+        "zscore",
+        "adx",
+        "atr",
+        "atr_ratio",
+        "turn_confirmed",
+        "reference_price",
+        "entry_price",
+        "exit_price",
+        "sl_distance",
+        "size_oz",
+        "bars_held",
+        "mfe_r",
+        "mfe_before_exit_r",
+        "mae_r",
+        "ambiguous_ohlc_exit",
+        "stop_overshoot_r",
+        "diagnosis_tag",
+        "exit_reason",
+        "gross_pnl_usd",
+        "entry_fee_usd",
+        "exit_fee_usd",
+        "net_pnl_usd",
+        "balance_after",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(trades)
 
 
 def main() -> None:
@@ -477,6 +564,11 @@ def main() -> None:
     parser.add_argument("--spread", type=float, default=0.40, help="fixed historical bid/ask spread in USD")
     parser.add_argument("--report", default="BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md")
     parser.add_argument("--json", default="BACKTEST_MAIN_HISTORY_V5_COST_AWARE.json")
+    parser.add_argument(
+        "--trades-csv",
+        default="BACKTEST_MAIN_HISTORY_V5_TRADE_AUDIT.csv",
+        help="CSV audit of every closed full-sample trade",
+    )
     parser.add_argument(
         "--data-revision",
         default="",
@@ -504,6 +596,7 @@ def main() -> None:
     results = {name: run_window(bars_list, start, end, args.spread) for name, (start, end) in windows.items()}
     write_report(Path(args.report), results, args.csv, args.spread, args.data_revision)
     Path(args.json).write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    write_trade_audit_csv(Path(args.trades_csv), results["Full sample"]["trades"])
     for name, result in results.items():
         print(
             f"{name}: trades={result['closed_trades']} final=${float(result['final_realized_balance']):.2f} "
