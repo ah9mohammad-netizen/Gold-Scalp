@@ -20,6 +20,8 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [Trade forensics & walk-forward parameter research](TRADE_FORENSICS_AND_OPTIMIZATION.md) — every baseline trade is audited and attempted parameter changes are rejected on unseen data
 - [Phase 2 regime-filter research](V6_REGIME_FILTER_RESEARCH.md) — slope, range, rejection, prior-range, and volume filters are tested and rejected on holdout data
 - [Asian/London DST-aware research](LONDON_ASIAN_TIMEZONE_RESEARCH.md) — a separate Asian-range sweep/reclaim family compares fixed UTC against `Europe/London` local time and is rejected on holdout data
+- [MTF trend-pullback research](MTF_TREND_PULLBACK_RESEARCH.md) — D1/H4/H1 → M15 → M5 trend alignment/pullback tests are rejected on unseen data
+- [XAU strategy comparison](XAU_STRATEGY_COMPARISON.md) — common decision view across every tested XAU-only family; PAXG excluded
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 
