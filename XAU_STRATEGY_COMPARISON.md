@@ -61,7 +61,7 @@ The MTF report and full candidate output are here:
 
 ## Phase 4A — calendar-only event veto
 
-The user-supplied ForexFactory-style calendar covers August 2023 onward. Its display timestamps were verified as `Asia/Tehran` and converted through the IANA timezone database to UTC. The MTF trend strategy was held fixed while only a 30/30 or 60/60 minute no-entry window around predeclared USD event bundles changed.
+The user-supplied ForexFactory-style calendar covers August 2023 onward. Its historical export displayed `Asia/Tehran` timestamps, verified against known CPI/FOMC release times, so the research parser converted that source display time through the IANA timezone database to UTC. The bot itself remains UTC. The MTF trend strategy was held fixed while only a 30/30 or 60/60 minute no-entry window around predeclared USD event bundles changed.
 
 | Calendar-covered window | No veto | Development-selected extended USD 30/30 veto | Decision |
 |---|---|---|---|

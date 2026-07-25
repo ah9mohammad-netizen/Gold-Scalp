@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Phase 4A: test a calendar-only USD event veto on the XAU MTF pullback.
 
-The supplied ForexFactory-style CSV contains date-header rows and event rows in
-Asia/Tehran display time. This script normalizes it with ``ZoneInfo`` to UTC,
-uses only named high-impact USD event families, and does not use actual versus
-forecast values. The first purpose is risk avoidance, not news-direction
+The supplied ForexFactory-style CSV contains date-header rows and event rows. Its
+source display zone is provided explicitly at run time and normalized with
+``ZoneInfo`` to UTC. The first purpose is risk avoidance, not news-direction
 prediction.
 
 Coverage begins in August 2023, so this test uses only calendar-covered periods:
@@ -39,7 +38,7 @@ from scripts.backtest_mtf_trend_pullback import (
     simulate,
 )
 
-CALENDAR_ZONE = ZoneInfo("Asia/Tehran")
+DEFAULT_CALENDAR_TIMEZONE = "Asia/Tehran"  # Provenance of the supplied historical CSV
 
 # A fixed, predeclared core set. It corresponds to the releases most commonly
 # associated with abrupt USD-rate repricing; it is not fitted to trade results.
@@ -125,7 +124,11 @@ def is_selected(title: str, patterns: Sequence[str]) -> bool:
     return any(pattern in normalized for pattern in patterns)
 
 
-def parse_calendar(path: Path, patterns: Sequence[str]) -> List[CalendarEvent]:
+def parse_calendar(
+    path: Path, patterns: Sequence[str], source_timezone: str = DEFAULT_CALENDAR_TIMEZONE
+) -> List[CalendarEvent]:
+    """Parse source display time then store every event as timezone-aware UTC."""
+    calendar_zone = ZoneInfo(source_timezone)
     current_date: date | None = None
     events: List[CalendarEvent] = []
     with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -148,7 +151,7 @@ def parse_calendar(path: Path, patterns: Sequence[str]) -> List[CalendarEvent]:
                 local_time = datetime.strptime(raw_time, "%H:%M").time()
             except ValueError:
                 continue
-            local = datetime.combine(current_date, local_time, tzinfo=CALENDAR_ZONE)
+            local = datetime.combine(current_date, local_time, tzinfo=calendar_zone)
             bucket = next(pattern for pattern in patterns if pattern in title.lower())
             events.append(CalendarEvent(local.astimezone(timezone.utc), title, bucket))
     # Several rows at the same timestamp belong to a single release bundle.
@@ -201,6 +204,14 @@ def main() -> None:
     parser.add_argument("csv", nargs="+", help="UTC M5 XAU CSV paths or glob patterns")
     parser.add_argument("--calendar", required=True, help="ForexFactory-style calendar CSV")
     parser.add_argument("--spread", type=float, default=0.40)
+    parser.add_argument(
+        "--calendar-timezone",
+        default=DEFAULT_CALENDAR_TIMEZONE,
+        help=(
+            "IANA timezone used by the source CSV display clock; normalized to UTC internally "
+            f"(default: {DEFAULT_CALENDAR_TIMEZONE})"
+        ),
+    )
     parser.add_argument("--report", default="XAU_EVENT_VETO_RESEARCH.md")
     parser.add_argument("--results-csv", default="XAU_EVENT_VETO_RESEARCH.csv")
     parser.add_argument("--data-revision", default="")
@@ -216,8 +227,8 @@ def main() -> None:
     # Frozen MTF variant from the preceding test; event policy is the only
     # variable in this phase.
     trend_variant = Variant("Slow M15 pullback", True, 50, 50, 50)
-    core_events = parse_calendar(Path(args.calendar), CORE_PATTERNS)
-    extended_events = parse_calendar(Path(args.calendar), EXTENDED_PATTERNS)
+    core_events = parse_calendar(Path(args.calendar), CORE_PATTERNS, args.calendar_timezone)
+    extended_events = parse_calendar(Path(args.calendar), EXTENDED_PATTERNS, args.calendar_timezone)
     if not core_events:
         raise RuntimeError("No selected USD events parsed; verify CSV format/timezone.")
 
@@ -264,7 +275,7 @@ def main() -> None:
         "## Scope and data provenance",
         "",
         f"- Price source: {len(bars):,} XAU UTC five-minute bars; M15/H1/H4/D1 derived only from completed M5 bars.",
-        "- Calendar source: user-supplied ForexFactory-style export from the main branch, parsed as `Asia/Tehran` display time and converted to UTC with IANA timezone rules.",
+        f"- Calendar source: user-supplied ForexFactory-style export from the main branch; source display timezone `{args.calendar_timezone}` normalized to UTC with IANA timezone rules. This conversion applies to the source file only; the Railway bot clock remains UTC.",
         f"- Calendar coverage used: {core_times[0].isoformat()} through {core_times[-1].isoformat()}.",
         f"- Core USD event bundles: {len(core_times)} unique timestamps / {len(core_events)} event rows.",
         "- This phase uses a news veto only. Actual/forecast values are intentionally not used for directional prediction.",

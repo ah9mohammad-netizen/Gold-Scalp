@@ -3,7 +3,7 @@
 ## Scope and data provenance
 
 - Price source: 443,451 XAU UTC five-minute bars; M15/H1/H4/D1 derived only from completed M5 bars.
-- Calendar source: user-supplied ForexFactory-style export from the main branch, parsed as `Asia/Tehran` display time and converted to UTC with IANA timezone rules.
+- Calendar source: user-supplied ForexFactory-style export from the main branch; source display timezone `Asia/Tehran` normalized to UTC with IANA timezone rules. This applies only to this historical export: its 2023 CPI `16:00` row maps to the official 12:30 UTC release. The Railway bot itself remains UTC.
 - Calendar coverage used: 2023-08-10T12:30:00+00:00 through 2026-08-07T12:30:00+00:00.
 - Core USD event bundles: 155 unique timestamps / 330 event rows.
 - This phase uses a news veto only. Actual/forecast values are intentionally not used for directional prediction.
