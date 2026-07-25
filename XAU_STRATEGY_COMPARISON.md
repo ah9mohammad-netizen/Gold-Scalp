@@ -91,6 +91,25 @@ See [`XAU_DAILY_MACRO_REGIME_RESEARCH.md`](XAU_DAILY_MACRO_REGIME_RESEARCH.md) a
 
 ---
 
+## Phase 5A — impulse–pullback–reclaim behavior discovery
+
+Before constructing another PnL system, two strict structural definitions were outcome-labelled. A candidate had to pass D1/H4 EMA50 trend permission, print an H1 ATR expansion through the prior 20-hour extreme, make a 25–60% controlled M15 pullback, reclaim the pullback swing on M15/EMA20, and then produce a later M5 directional trigger.
+
+| Definition / window | Candidates | +1R before stop | +1.5R before stop | +2R before stop | Stop first | Decision |
+|---|---:|---:|---:|---:|---:|---|
+| Standard, development | 93 | 18.3% | 11.8% | 10.8% | 38.7% | Reject |
+| Standard, validation | 141 | 22.7% | 16.3% | 11.3% | 38.3% | Reject |
+| Standard, holdout | 95 | 31.6% | 22.1% | 17.9% | 47.4% | Reject |
+| Conservative, development | 58 | 13.8% | 8.6% | 6.9% | 34.5% | Reject |
+| Conservative, validation | 98 | 19.4% | 12.2% | 9.2% | 35.7% | Reject |
+| Conservative, holdout | 53 | 34.0% | 22.6% | 20.8% | 35.8% | Reject |
+
+The discovery gate required materially more +1R-before-stop outcomes than stop-first outcomes in all windows. Both definitions failed, so no PnL optimisation is justified. The prior-day stress gate did not remove any of these strict candidates, which means it did not provide additional discrimination for this structure.
+
+See [`XAU_IMPULSE_RECLAIM_DISCOVERY.md`](XAU_IMPULSE_RECLAIM_DISCOVERY.md) and [`XAU_IMPULSE_RECLAIM_DISCOVERY.csv`](XAU_IMPULSE_RECLAIM_DISCOVERY.csv).
+
+---
+
 ## What remains worth testing
 
 We should not retune EMA periods, stop multipliers, target R values, or event-window sizes against these holdout results. The next candidate needs **new information**, not another variation of price-only rules.
