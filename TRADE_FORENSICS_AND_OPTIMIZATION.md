@@ -144,7 +144,20 @@ The development-selected filter was a maximum signal-bar range of 1.25 ATR. It w
 
 See [`V6_REGIME_FILTER_RESEARCH.md`](V6_REGIME_FILTER_RESEARCH.md) and [`V6_REGIME_FILTER_RESEARCH.csv`](V6_REGIME_FILTER_RESEARCH.csv) for all candidates. This rejects simple single-bar OHLC/tick-volume filters as a fix; no v6 setting is promoted.
 
-## 6. Promotion checklist for any future strategy version
+## 6. DST-aware Asian range / London session result
+
+A separate structural family was tested rather than changing the failed Z-score rules. It formed an Asian range from 00:00 UTC, required a sweep beyond the range and a close back inside it, then compared the older fixed UTC London window with a `Europe/London` local 08:00–10:30 window. The local window correctly shifts from 08:00 UTC during GMT to 07:00 UTC during British Summer Time.
+
+Timezone alignment improved the development result relative to the legacy fixed 07:00 UTC schedule (−14.64% versus −29.28%), but the structural premise still failed:
+
+| Timing | Validation 2023–2024 | Holdout 2025+ | Decision |
+|---|---:|---:|---|
+| Fixed 07:00–10:30 UTC | −7.58%, PF 0.44 | −60.43%, PF 0.18 | Reject |
+| London local 08:00–10:30 / Asia through 06:30 UTC | −7.48%, PF 0.28 | −51.18%, PF 0.23 | Reject |
+
+The timezone conversion is correct and should be retained for future session research, but it does **not** make the Asian sweep/reclaim rule tradable under this cost model. See [`LONDON_ASIAN_TIMEZONE_RESEARCH.md`](LONDON_ASIAN_TIMEZONE_RESEARCH.md) and [`LONDON_ASIAN_TIMEZONE_RESEARCH.csv`](LONDON_ASIAN_TIMEZONE_RESEARCH.csv).
+
+## 7. Promotion checklist for any future strategy version
 
 A proposed `v6` must answer every item in the database and report, not merely show an attractive equity curve.
 
