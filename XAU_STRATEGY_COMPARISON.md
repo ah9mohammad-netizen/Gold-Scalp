@@ -8,7 +8,7 @@
 
 > **Data-quality and time caveat:** the raw M5 `Date` labels are empirically EET/EEST broker-server time, not UTC. A native M1 source validates this via 0.997 return correlation after canonical UTC conversion and supplies repair bars for the two critical multi-day gaps. Every prior session/event result is provisional until re-run from the canonical UTC, M1-repaired series with a declared gap guard. See [`XAU_M1_M5_RECONCILIATION.md`](XAU_M1_M5_RECONCILIATION.md).
 
-> **Decision:** none of the tested strategy families has passed the research gate under the current data and cost model. This is an elimination result, not proof that no gold strategy can work.
+> **Decision:** none of the tested strategy families has passed the research gate under the current data and cost model. This is an elimination result, not proof that no gold strategy can work. The canonical UTC rerun supersedes the raw-label tables below: [`XAU_CANONICAL_RESEARCH_RERUN.md`](XAU_CANONICAL_RESEARCH_RERUN.md).
 
 ---
 

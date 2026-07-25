@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
 
 from app.config import config
 from scripts.backtest_v5_csv import Bar, WilderIndicators, load_csv_parts
+from scripts.gap_guard import GapGuard
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class Result:
     wins: int
     losses: int
     time_exits: int
+    gap_exits: int
     final_balance: float
     return_pct: float
     profit_factor: Optional[float]
@@ -116,6 +118,7 @@ class Result:
                 "wins": self.wins,
                 "losses": self.losses,
                 "time_exits": self.time_exits,
+                "gap_exits": self.gap_exits,
                 "final_balance": round(self.final_balance, 4),
                 "return_pct": round(self.return_pct, 4),
                 "profit_factor": self.profit_factor,
@@ -344,11 +347,12 @@ def simulate(
     event_pre_minutes: int = 0,
     event_post_minutes: int = 0,
     entry_allowed: Optional[Callable[[datetime, str], bool]] = None,
+    gap_guard: Optional[GapGuard] = None,
 ) -> Result:
     indicators = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     initial = balance = peak = float(config.INITIAL_BALANCE_USDT)
     max_drawdown = fees = gross_profit = gross_loss = 0.0
-    wins = losses = time_exits = 0
+    wins = losses = time_exits = gap_exits = 0
     position: Optional[Position] = None
     daily_state: Optional[TrendState] = None
     h4_state: Optional[TrendState] = None
@@ -402,6 +406,8 @@ def simulate(
             reason = None
             if outcome:
                 exit_price, reason = outcome
+            elif gap_guard is not None and gap_guard.force_flat_after(bar.timestamp):
+                exit_price, reason = close_at_market(position, bar, spread), "DATA_GAP_EXIT"
             elif decision_time.hour >= flat_hour or decision_time.date() != position.opened_at.date():
                 exit_price, reason = close_at_market(position, bar, spread), "TIME_EXIT"
             if reason:
@@ -412,6 +418,8 @@ def simulate(
                 fees += position.entry_fee + exit_fee
                 if reason == "TIME_EXIT":
                     time_exits += 1
+                elif reason == "DATA_GAP_EXIT":
+                    gap_exits += 1
                 if net > 0:
                     wins += 1
                     gross_profit += net
@@ -429,6 +437,9 @@ def simulate(
         if decision_time.hour >= flat_hour or traded_day == decision_time.strftime("%Y-%m-%d"):
             continue
         if pullback is None or decision_time > pullback.expires_at:
+            continue
+        if gap_guard is not None and not gap_guard.entry_allowed(bar.timestamp):
+            pullback = None
             continue
         if trend_direction(variant, daily_state, h4_state, h1_state) != pullback.direction:
             pullback = None
@@ -484,6 +495,7 @@ def simulate(
         wins=wins,
         losses=losses,
         time_exits=time_exits,
+        gap_exits=gap_exits,
         final_balance=balance,
         return_pct=(balance / initial - 1.0) * 100.0,
         profit_factor=(gross_profit / gross_loss) if gross_loss else None,
@@ -506,14 +518,15 @@ def rank_development(results: Sequence[Result]) -> List[Result]:
 
 def markdown_table(results: Sequence[Result]) -> List[str]:
     lines = [
-        "| Variant | Trades | W/L | Time exits | Final | Return | PF | DD | Example M5 entries |",
+        "| Variant | Trades | W/L | Time / gap exits | Final | Return | PF | DD | Example M5 entries |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for result in results:
         pf = f"{result.profit_factor:.2f}" if result.profit_factor is not None else "n/a"
         lines.append(
-            f"| `{result.variant.label()}` | {result.trades} | {result.wins}/{result.losses} | {result.time_exits} | "
-            f"${result.final_balance:.2f} | {result.return_pct:+.2f}% | {pf} | ${result.max_drawdown:.2f} | "
+            f"| `{result.variant.label()}` | {result.trades} | {result.wins}/{result.losses} | "
+            f"{result.time_exits}/{result.gap_exits} | ${result.final_balance:.2f} | "
+            f"{result.return_pct:+.2f}% | {pf} | ${result.max_drawdown:.2f} | "
             f"{'<br>'.join(result.examples) or '—'} |"
         )
     return lines
@@ -537,6 +550,11 @@ def main() -> None:
     parser.add_argument("--session-start", type=int, default=7)
     parser.add_argument("--session-end", type=int, default=17)
     parser.add_argument("--flat-hour", type=int, default=21)
+    parser.add_argument(
+        "--gap-guard",
+        action="store_true",
+        help="block entries near non-routine data gaps and force-flat before them",
+    )
     parser.add_argument("--report", default="MTF_TREND_PULLBACK_RESEARCH.md")
     parser.add_argument("--results-csv", default="MTF_TREND_PULLBACK_RESEARCH.csv")
     parser.add_argument("--data-revision", default="")
@@ -547,6 +565,7 @@ def main() -> None:
         parser.error("invalid UTC session/flat hours")
 
     bars = load_csv_parts(args.csv)
+    gap_guard = GapGuard(bars) if args.gap_guard else None
     m15 = indicator_states(aggregate(bars, 15))
     h1 = indicator_states(aggregate(bars, 60))
     h4 = indicator_states(aggregate(bars, 240))
@@ -564,7 +583,12 @@ def main() -> None:
     ]
     development_name, development_start, development_end = windows[0]
     development = [
-        simulate(bars, m15, h1, h4, d1, variant, development_start, development_end, args.spread, args.stop_buffer, args.sl_atr, args.rr, args.session_start, args.session_end, args.flat_hour, development_name)
+        simulate(
+            bars, m15, h1, h4, d1, variant, development_start, development_end,
+            args.spread, args.stop_buffer, args.sl_atr, args.rr,
+            args.session_start, args.session_end, args.flat_hour, development_name,
+            gap_guard=gap_guard,
+        )
         for variant in variants
     ]
     ranked = rank_development(development)
@@ -574,7 +598,12 @@ def main() -> None:
     for window_name, start, end in windows[1:]:
         for variant, name in ((strict, "Strict hierarchy"), (selected, "Development-selected")):
             unseen.append(
-                simulate(bars, m15, h1, h4, d1, variant, start, end, args.spread, args.stop_buffer, args.sl_atr, args.rr, args.session_start, args.session_end, args.flat_hour, f"{name} — {window_name}")
+                simulate(
+                    bars, m15, h1, h4, d1, variant, start, end,
+                    args.spread, args.stop_buffer, args.sl_atr, args.rr,
+                    args.session_start, args.session_end, args.flat_hour,
+                    f"{name} — {window_name}", gap_guard=gap_guard,
+                )
             )
     all_results = [*development, *unseen]
     write_csv(Path(args.results_csv), all_results)
@@ -589,6 +618,7 @@ def main() -> None:
         f"- Execution: ${args.spread:.2f} spread, ${config.PAPER_SLIPPAGE_USD:.2f} adverse slippage per fill, {config.PAPER_TAKER_FEE_RATE * 100:.02f}% fee per side, SL-first ambiguity treatment.",
         f"- Stop: farther of M15 pullback extreme + ${args.stop_buffer:.2f} buffer or {args.sl_atr:.1f}×M5 ATR. Target: {args.rr:.1f}R.",
         "- Development selection is limited to 2019-09 through 2022-12. Validation and holdout remain frozen.",
+        f"- Gap guard: {'enabled' if args.gap_guard else 'disabled'}; non-routine gaps are {'force-flattened/entry-blocked' if args.gap_guard else 'not specially handled'}.",
     ]
     if args.data_revision:
         report.append(f"- Data revision: `{args.data_revision}`.")

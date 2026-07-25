@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import config
+from scripts.gap_guard import GapGuard
 from scripts.backtest_mtf_trend_pullback import (
     Result,
     Variant,
@@ -220,6 +221,7 @@ def main() -> None:
         parser.error("spread must be non-negative")
 
     bars = load_csv_parts(args.csv)
+    gap_guard = GapGuard(bars)
     m15 = indicator_states(aggregate(bars, 15))
     h1 = indicator_states(aggregate(bars, 60))
     h4 = indicator_states(aggregate(bars, 240))
@@ -252,6 +254,7 @@ def main() -> None:
             bars, m15, h1, h4, d1, trend_variant, start, end,
             args.spread, 0.20, 1.5, 2.0, 7, 17, 21, name,
             events, veto.pre_minutes, veto.post_minutes,
+            gap_guard=gap_guard,
         )
         return Evaluation(veto, name, result)
 

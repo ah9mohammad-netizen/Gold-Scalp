@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
 
 from app.config import config
 from scripts.backtest_v5_csv import Bar, WilderIndicators, load_csv_parts
+from scripts.gap_guard import GapGuard
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -217,6 +218,7 @@ def simulate(
     sl_atr_multiplier: float,
     tp_r: float,
     window_name: str,
+    gap_guard: Optional[GapGuard] = None,
 ) -> Result:
     initial = balance = peak = float(config.INITIAL_BALANCE_USDT)
     max_drawdown = 0.0
@@ -255,6 +257,14 @@ def simulate(
         # removes same-bar entry/exit look-ahead.
         if position is not None:
             outcome = exit_position(position, feature, spread)
+            if outcome is None and gap_guard is not None and gap_guard.force_flat_after(bar.timestamp):
+                half = spread / 2.0
+                exit_price = (
+                    bar.close - half - config.PAPER_SLIPPAGE_USD
+                    if position.direction == "LONG"
+                    else bar.close + half + config.PAPER_SLIPPAGE_USD
+                )
+                outcome = (exit_price, "DATA_GAP_EXIT")
             if outcome:
                 exit_price, _reason = outcome
                 gross = (
@@ -278,6 +288,8 @@ def simulate(
                 position = None
 
         if position is not None or traded_day or balance < 5.0:
+            continue
+        if gap_guard is not None and not gap_guard.entry_allowed(bar.timestamp):
             continue
         if not asian_ready or not in_london_window(bar, timing):
             continue
@@ -373,6 +385,7 @@ def main() -> None:
     parser.add_argument("--sweep-stop-buffer", type=float, default=0.20)
     parser.add_argument("--sl-atr", type=float, default=1.5)
     parser.add_argument("--tp-r", type=float, default=2.0)
+    parser.add_argument("--gap-guard", action="store_true")
     parser.add_argument("--report", default="LONDON_ASIAN_TIMEZONE_RESEARCH.md")
     parser.add_argument("--results-csv", default="LONDON_ASIAN_TIMEZONE_RESEARCH.csv")
     parser.add_argument("--data-revision", default="")
@@ -381,6 +394,7 @@ def main() -> None:
         parser.error("spread, buffers, SL ATR, and TP R must be non-negative")
 
     bars = load_csv_parts(args.csv)
+    gap_guard = GapGuard(bars) if args.gap_guard else None
     features = build_features(bars)
     configs = [
         # Legacy fixed UTC window used by older strategy sketches.
@@ -419,6 +433,7 @@ def main() -> None:
             args.sl_atr,
             args.tp_r,
             development_name,
+            gap_guard=gap_guard,
         )
         for timing in configs
     ]
@@ -440,6 +455,7 @@ def main() -> None:
                 args.sl_atr,
                 args.tp_r,
                 f"{label} — {window_name}",
+                gap_guard=gap_guard,
             )
             unseen.append(result)
 
@@ -457,6 +473,7 @@ def main() -> None:
         f"- Cost: ${args.spread:.2f} spread, ${config.PAPER_SLIPPAGE_USD:.2f} adverse slippage per fill, and {config.PAPER_TAKER_FEE_RATE * 100:.02f}% taker fee per side.",
         "- Position management begins on the bar after entry. If a subsequent OHLC bar touches both stop and target, stop is selected first.",
         "- Timing choice is made only from development data; validation and holdout are frozen.",
+        f"- Gap guard: {'enabled' if args.gap_guard else 'disabled'}.",
     ]
     if args.data_revision:
         report.append(f"- Data revision: `{args.data_revision}`.")

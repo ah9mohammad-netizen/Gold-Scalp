@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import config
+from scripts.gap_guard import GapGuard
 from scripts.backtest_mtf_trend_pullback import (
     AggregateBar,
     TrendState,
@@ -276,7 +277,13 @@ def candidate_from_trigger(
     return Candidate(definition.name, bar.timestamp + timedelta(minutes=5), direction, entry, stop, risk, macro_allowed)
 
 
-def label_outcome(candidate: Candidate, bars: Sequence[Bar], start_index: int, spread: float) -> Outcome:
+def label_outcome(
+    candidate: Candidate,
+    bars: Sequence[Bar],
+    start_index: int,
+    spread: float,
+    gap_guard: Optional[GapGuard] = None,
+) -> Outcome:
     half = spread / 2.0
     reached = {0.5: False, 1.0: False, 1.5: False, 2.0: False}
     max_r = 0.0
@@ -308,6 +315,9 @@ def label_outcome(candidate: Candidate, bars: Sequence[Bar], start_index: int, s
             # A +2R target would be realized at this point; do not let a later
             # reversal relabel an already achieved target as a stop-out.
             break
+        if gap_guard is not None and gap_guard.force_flat_after(bar.timestamp):
+            timed_out = True
+            break
         if decision.hour >= 21 or decision.date() != entry_date:
             timed_out = True
             break
@@ -333,6 +343,7 @@ def discover(
     definition: Definition,
     macro_gate,
     spread: float,
+    gap_guard: Optional[GapGuard] = None,
 ) -> List[Outcome]:
     m5_indicators = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     daily: Optional[TrendState] = None
@@ -372,12 +383,15 @@ def discover(
 
         if values is None or index < 300 or reclaim is None or decision <= reclaim.created_at:
             continue
+        if gap_guard is not None and not gap_guard.entry_allowed(bar.timestamp):
+            reclaim = None
+            continue
         macro_allowed = macro_gate(decision, reclaim.pullback.impulse.direction)
         candidate = candidate_from_trigger(
             definition, bar, bars[index - 1], reclaim, float(values["atr_14"]), macro_allowed, spread
         )
         if candidate is not None:
-            outcomes.append(label_outcome(candidate, bars, index, spread))
+            outcomes.append(label_outcome(candidate, bars, index, spread, gap_guard=gap_guard))
             # One candidate per validated impulse; label the structure then
             # wait for the next H1 impulse instead of stacking variants.
             impulse = pullback = reclaim = None
@@ -436,6 +450,7 @@ def main() -> None:
     parser.add_argument("--data-revision", default="")
     args = parser.parse_args()
     bars = load_csv_parts(args.csv)
+    gap_guard = GapGuard(bars)
     macro_history = load_macro(Path(args.macro))
     m15 = indicator_states(aggregate(bars, 15))
     h1_context = h1_contexts(aggregate(bars, 60))
@@ -457,10 +472,12 @@ def main() -> None:
     all_rows: List[Summary] = []
     for definition in definitions:
         all_outcomes = discover(
-            bars, m15, h1_context, h4, d1, definition, policies["All candidates"], args.spread
+            bars, m15, h1_context, h4, d1, definition,
+            policies["All candidates"], args.spread, gap_guard=gap_guard,
         )
         stress_outcomes = discover(
-            bars, m15, h1_context, h4, d1, definition, policies["Prior-day stress allowed"], args.spread
+            bars, m15, h1_context, h4, d1, definition,
+            policies["Prior-day stress allowed"], args.spread, gap_guard=gap_guard,
         )
         for subset, outcomes in (
             ("All candidates", all_outcomes),
@@ -488,6 +505,7 @@ def main() -> None:
         "- D1/H4/H1/M15 state changes become visible only at their parent close time.",
         "- M5 entry can occur only after a later M5 close than the M15 reclaim close.",
         "- Daily macro gate reads only the prior daily row; same-day DXY/VIX/oil closes and ex-post geopolitical labels are not allowed.",
+        f"- Gap guard: {gap_guard.non_routine_gap_count} non-routine gaps; candidates are blocked near them and outcomes force-stop at the last known pre-gap bar.",
         f"- Outcome: ${args.spread:.2f} fixed spread, ${config.PAPER_SLIPPAGE_USD:.2f} adverse slippage, stop-first intrabar ordering, 8-hour/21:00 UTC horizon.",
         "",
         "## Structure definitions",

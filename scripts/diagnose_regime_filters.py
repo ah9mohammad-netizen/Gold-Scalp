@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.gap_guard import GapGuard
 from scripts.optimize_v5_parameters import (
     Parameters,
     Result,
@@ -73,6 +74,7 @@ def main() -> None:
         parser.error("--spread must be non-negative")
 
     bars = load_csv_parts(args.csv)
+    gap_guard = GapGuard(bars)
     features = build_features(bars)
     windows: List[Window] = [
         (
@@ -119,7 +121,7 @@ def main() -> None:
 
     _, development_start, development_end = windows[0]
     development = [
-        simulate(features, candidate, development_start, development_end, args.spread, "Development")
+        simulate(features, candidate, development_start, development_end, args.spread, "Development", gap_guard=gap_guard)
         for candidate in candidates
     ]
     ranked = rank_development(development)
@@ -129,7 +131,7 @@ def main() -> None:
     unseen: List[Result] = []
     for label, start, end in windows[1:]:
         for params, name in ((baseline, "Baseline"), (selected, "Development-selected regime filter")):
-            result = simulate(features, params, start, end, args.spread, f"{name} — {label}")
+            result = simulate(features, params, start, end, args.spread, f"{name} — {label}", gap_guard=gap_guard)
             unseen.append(result)
             all_results.append(result)
     write_csv(Path(args.results_csv), all_results)

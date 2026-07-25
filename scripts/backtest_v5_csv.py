@@ -43,6 +43,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from app.config import config
 from app.engine import engine
+from scripts.gap_guard import GapGuard
 
 
 @dataclass(frozen=True)
@@ -183,19 +184,46 @@ def load_csv_parts(patterns: Sequence[str]) -> List[Bar]:
         if not path.exists():
             raise FileNotFoundError(path)
         with path.open(newline="", encoding="utf-8-sig") as handle:
-            reader = csv.DictReader(handle, delimiter=";")
+            # Main-branch source files are semicolon-delimited. Canonical repair
+            # output is standard CSV with `timestamp_utc`; support both without
+            # ever changing their source-time semantics here.
+            preview = handle.read(4096)
+            handle.seek(0)
+            delimiter = ";" if preview.splitlines()[0].count(";") > 0 else ","
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            canonical = bool(reader.fieldnames and "timestamp_utc" in reader.fieldnames)
             for row in reader:
                 try:
+                    if canonical:
+                        timestamp = datetime.fromisoformat(
+                            row["timestamp_utc"].replace("Z", "+00:00")
+                        ).astimezone(timezone.utc)
+                        open_key, high_key, low_key, close_key, volume_key = (
+                            "open",
+                            "high",
+                            "low",
+                            "close",
+                            "volume",
+                        )
+                    else:
+                        timestamp = datetime.strptime(row["Date"], "%Y.%m.%d %H:%M").replace(
+                            tzinfo=timezone.utc
+                        )
+                        open_key, high_key, low_key, close_key, volume_key = (
+                            "Open",
+                            "High",
+                            "Low",
+                            "Close",
+                            "Volume",
+                        )
                     bars.append(
                         Bar(
-                            timestamp=datetime.strptime(row["Date"], "%Y.%m.%d %H:%M").replace(
-                                tzinfo=timezone.utc
-                            ),
-                            open=float(row["Open"]),
-                            high=float(row["High"]),
-                            low=float(row["Low"]),
-                            close=float(row["Close"]),
-                            volume=float(row.get("Volume") or 0.0),
+                            timestamp=timestamp,
+                            open=float(row[open_key]),
+                            high=float(row[high_key]),
+                            low=float(row[low_key]),
+                            close=float(row[close_key]),
+                            volume=float(row.get(volume_key) or 0.0),
                         )
                     )
                 except (KeyError, TypeError, ValueError) as exc:
@@ -290,7 +318,13 @@ def exit_position(position: Position, bar: Bar, spread: float) -> Optional[tuple
     return None
 
 
-def run_window(bars: Iterable[Bar], start: Optional[datetime], end: Optional[datetime], spread: float) -> Dict[str, object]:
+def run_window(
+    bars: Iterable[Bar],
+    start: Optional[datetime],
+    end: Optional[datetime],
+    spread: float,
+    gap_guard: Optional[GapGuard] = None,
+) -> Dict[str, object]:
     indicator = WilderIndicators(config.ATR_PERIOD, config.ZSCORE_PERIOD, config.ATR_AVG_LOOKBACK)
     balance = float(config.INITIAL_BALANCE_USDT)
     initial = balance
@@ -316,6 +350,14 @@ def run_window(bars: Iterable[Bar], start: Optional[datetime], end: Optional[dat
         # Manage a position first. A new signal cannot use its own OHLC range.
         if position is not None:
             outcome = exit_position(position, bar, spread)
+            if outcome is None and gap_guard is not None and gap_guard.force_flat_after(bar.timestamp):
+                half = spread / 2.0
+                exit_price = (
+                    bar.close - half - config.PAPER_SLIPPAGE_USD
+                    if position.direction == "LONG"
+                    else bar.close + half + config.PAPER_SLIPPAGE_USD
+                )
+                outcome = (exit_price, "DATA_GAP_EXIT")
             if outcome:
                 exit_price, reason = outcome
                 gross = (
@@ -381,6 +423,8 @@ def run_window(bars: Iterable[Bar], start: Optional[datetime], end: Optional[dat
                 position = None
 
         if position is not None or balance < 5.0:
+            continue
+        if gap_guard is not None and not gap_guard.entry_allowed(bar.timestamp):
             continue
         date_key = bar.timestamp.strftime("%Y-%m-%d")
         if cooldown_until and bar.timestamp < cooldown_until:
@@ -562,6 +606,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", nargs="+", help="CSV part paths or shell-style patterns")
     parser.add_argument("--spread", type=float, default=0.40, help="fixed historical bid/ask spread in USD")
+    parser.add_argument(
+        "--gap-guard",
+        action="store_true",
+        help="block entries near non-routine gaps and force-flat before them",
+    )
     parser.add_argument("--report", default="BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md")
     parser.add_argument("--json", default="BACKTEST_MAIN_HISTORY_V5_COST_AWARE.json")
     parser.add_argument(
@@ -582,6 +631,7 @@ def main() -> None:
     bars_list = load_csv_parts(args.csv)
     if len(bars_list) < 301:
         raise RuntimeError("At least 301 bars are required")
+    gap_guard = GapGuard(bars_list) if args.gap_guard else None
     windows = {
         "Full sample": (None, None),
         "Mid sample (2022-2023)": (
@@ -593,7 +643,10 @@ def main() -> None:
             None,
         ),
     }
-    results = {name: run_window(bars_list, start, end, args.spread) for name, (start, end) in windows.items()}
+    results = {
+        name: run_window(bars_list, start, end, args.spread, gap_guard=gap_guard)
+        for name, (start, end) in windows.items()
+    }
     write_report(Path(args.report), results, args.csv, args.spread, args.data_revision)
     Path(args.json).write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     write_trade_audit_csv(Path(args.trades_csv), results["Full sample"]["trades"])

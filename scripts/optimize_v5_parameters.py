@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import config
+from scripts.gap_guard import GapGuard
 from backtest_v5_csv import Bar, WilderIndicators, load_csv_parts
 
 
@@ -341,7 +342,13 @@ def in_window(timestamp: datetime, start: datetime, end: Optional[datetime]) -> 
 
 
 def simulate(
-    features: Iterable[Feature], params: Parameters, start: datetime, end: Optional[datetime], spread: float, name: str
+    features: Iterable[Feature],
+    params: Parameters,
+    start: datetime,
+    end: Optional[datetime],
+    spread: float,
+    name: str,
+    gap_guard: Optional[GapGuard] = None,
 ) -> Result:
     initial = float(config.INITIAL_BALANCE_USDT)
     balance = peak = initial
@@ -360,6 +367,14 @@ def simulate(
             continue
         if position:
             outcome = close_on_bar(position, bar, spread)
+            if outcome is None and gap_guard is not None and gap_guard.force_flat_after(bar.timestamp):
+                half = spread / 2.0
+                exit_price = (
+                    bar.close - half - config.PAPER_SLIPPAGE_USD
+                    if position.direction == "LONG"
+                    else bar.close + half + config.PAPER_SLIPPAGE_USD
+                )
+                outcome = (exit_price, "DATA_GAP_EXIT")
             if outcome:
                 exit_price, _reason = outcome
                 gross = (
@@ -385,6 +400,8 @@ def simulate(
                 cooldown_until = bar.timestamp + timedelta(seconds=cooldown_seconds)
                 position = None
         if position or balance < 5:
+            continue
+        if gap_guard is not None and not gap_guard.entry_allowed(bar.timestamp):
             continue
         date_key = bar.timestamp.strftime("%Y-%m-%d")
         if cooldown_until and bar.timestamp < cooldown_until:
@@ -463,6 +480,7 @@ def main() -> None:
         parser.error("--spread must be non-negative")
 
     bars = load_csv_parts(args.csv)
+    gap_guard = GapGuard(bars)
     features = build_features(bars)
     windows = {
         "Development (2019-09 to 2022-12)": (
@@ -491,7 +509,7 @@ def main() -> None:
     ]
     dev_start, dev_end = windows["Development (2019-09 to 2022-12)"]
     stage1_dev = [
-        simulate(features, params, dev_start, dev_end, args.spread, "Development") for params in stage1_params
+        simulate(features, params, dev_start, dev_end, args.spread, "Development", gap_guard=gap_guard) for params in stage1_params
     ]
     stage1_ranked = rank_development(stage1_dev)
     stage1_winner = stage1_ranked[0].params
@@ -503,7 +521,7 @@ def main() -> None:
         for start, end in [(7, 17), (7, 12), (12, 17), (12, 16), (13, 17), (8, 16)]
     ]
     stage2_dev = [
-        simulate(features, params, dev_start, dev_end, args.spread, "Development") for params in stage2_params
+        simulate(features, params, dev_start, dev_end, args.spread, "Development", gap_guard=gap_guard) for params in stage2_params
     ]
     stage2_ranked = rank_development(stage2_dev)
     stage2_winner = stage2_ranked[0].params
@@ -528,7 +546,7 @@ def main() -> None:
             )
         )
     stage3_dev = [
-        simulate(features, params, dev_start, dev_end, args.spread, "Development") for params in stage3_params
+        simulate(features, params, dev_start, dev_end, args.spread, "Development", gap_guard=gap_guard) for params in stage3_params
     ]
     stage3_ranked = rank_development(stage3_dev)
     selected = stage3_ranked[0].params
@@ -540,7 +558,7 @@ def main() -> None:
     for params, label in ((baseline, "Baseline"), (selected, "Development-selected")):
         for window_name in ("Validation (2023-2024)", "Holdout (2025 onward)"):
             start, end = windows[window_name]
-            result = simulate(features, params, start, end, args.spread, f"{label} — {window_name}")
+            result = simulate(features, params, start, end, args.spread, f"{label} — {window_name}", gap_guard=gap_guard)
             comparisons.append(result)
             all_rows.append(result)
 

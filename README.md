@@ -29,6 +29,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - [Compressed-archive reconciliation](XAU_COMPRESSED_ARCHIVE_RECONCILIATION.md) — the 2004–2026 archive is valid but exactly preserves the recent missing windows
 - [XAUUSDc M3 assessment](XAUUSDC_M3_DATA_QUALITY_AUDIT.md) — M3 data cannot reconstruct M5 and contains stale/repeated-bar contamination
 - [Native M1/M5 reconciliation](XAU_M1_M5_RECONCILIATION.md) — native M1 validates an EET/EEST M5 server clock and supplies provenance-labelled repair bars
+- [Canonical UTC research rerun](XAU_CANONICAL_RESEARCH_RERUN.md) — all strategy families re-tested after timezone correction, M1 repair, and gap guard
 - [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 
