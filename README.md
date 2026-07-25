@@ -16,7 +16,8 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 ## Research and strategy
 
 - [Gold automation research and strategy decision memo](GOLD_AUTOMATION_RESEARCH_2026.md) — strategy families, venue facts, rejected approaches, research gates, and sources
-- [Current v5 strategy notes](STRATEGY_V5.md) — repository historical-study baseline and its limitations
+- [Cost-aware main-history backtest](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) — reproducible 443,451-bar run of the current baseline; negative net result means it remains paper-only
+- [Current v5 strategy notes](STRATEGY_V5.md) — earlier repository historical-study baseline and its limitations
 - [Railway & Telegram deployment guide](RAILWAY_DEPLOYMENT_GUIDE.md) — exact Volume, variables, commands, and verification steps
 
 ## Quick start

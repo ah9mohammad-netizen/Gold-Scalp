@@ -133,7 +133,21 @@ Before writing any ApeX executor, query the **actual** contract list and verify 
 
 ---
 
-## 6. Practical next experiments, in priority order
+## 6. Main-branch historical re-run — current baseline did not pass
+
+A reproducible run was performed on the five supplied main-branch 5-minute CSV parts (443,451 bars, 2019-09-06 through 2026-01-30; data revision `9229cd58ff171df61180c12e16fc35cc8b716343`). It applied the **current** paper model: closed-bar decisions, fixed $0.40 spread, $0.03 adverse slippage per fill, 0.04% taker fee per side, and stop-first handling of ambiguous OHLC bars.
+
+| Window | Closed trades | Final realized balance | Net return | PF | Max realized DD |
+|---|---:|---:|---:|---:|---:|
+| Full sample | 44 | $86.12 | −13.88% | 0.65 | $16.54 |
+| 2022–2023 | 1 | $101.73 | +1.73% | n/a | $0.00 |
+| 2025-01 onward | 20 | $94.28 | −5.72% | 0.70 | $6.51 |
+
+The 2022–2023 segment has one trade, so its positive number has no evidential value. The full and recent segments are negative. **This baseline therefore fails the go-live gate.** Keep it in paper research mode; do not interpret a previous favourable report or a short forward streak as sufficient contrary evidence.
+
+See [`BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md`](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) for assumptions, limits, and the exact reproduction command in [`scripts/backtest_v5_csv.py`](scripts/backtest_v5_csv.py).
+
+## 7. Practical next experiments, in priority order
 
 1. Run the current closed-candle, cost-aware paper engine for enough signals; download `/get_db` regularly.
 2. Build a notebook that groups net results by UTC hour, side, ADX bucket, Z-score bucket, spread bucket, feed source, and exit reason.
