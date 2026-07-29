@@ -81,7 +81,8 @@ def _resolve_database_url(db_path: str) -> str:
 class AppConfig:
     ENV: str = os.getenv("ENV", "production")
     RAILWAY_ENVIRONMENT: str = os.getenv("RAILWAY_ENVIRONMENT", "")
-    STRATEGY_VERSION: str = "v5-zscore-mr"
+    STRATEGY_VERSION: str = os.getenv("STRATEGY_VERSION", "v5-zscore-mr")
+    ENABLE_SIX_PILLAR_SCALPER: bool = _env_bool("ENABLE_SIX_PILLAR_SCALPER", "false") or STRATEGY_VERSION.lower().startswith("v6")
 
     INITIAL_BALANCE_USDT: float = float(os.getenv("PAPER_BALANCE", "100.00"))
     SYMBOL: str = os.getenv("SYMBOL", "XAU-USDT")

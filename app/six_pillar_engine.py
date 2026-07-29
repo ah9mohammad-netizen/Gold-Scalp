@@ -425,7 +425,7 @@ class SixPillarDecisionEngine:
             zscore = (price - sma) / stdev
 
         # 1. Mean-Return Exit for reversion / sweep reclaim setups
-        if setup_name in ("LIQUIDITY_SWEEP_RECLAIM", "ZSCORE_SWEEP_RECLAIM", "ZSCORE_MR"):
+        if not setup_name or setup_name in ("LIQUIDITY_SWEEP_RECLAIM", "ZSCORE_SWEEP_RECLAIM", "ZSCORE_MR", "None"):
             if abs(zscore) <= self.config.MEAN_RETURN_EXIT_Z:
                 logger.info("🎯 Pillar 5 Mean-Return Exit triggered (Z=%.2f <= %.2f)", zscore, self.config.MEAN_RETURN_EXIT_Z)
                 return "MEAN_RETURN_EXIT"

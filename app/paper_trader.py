@@ -24,10 +24,16 @@ class PaperTradingEngine:
     def __init__(
         self,
         database: Optional[DatabaseEngine] = None,
-        decision_engine: Optional[LayeredDecisionEngine] = None,
+        decision_engine: Optional[Any] = None,
     ) -> None:
         self.db = database or db
-        self.decision_engine = decision_engine or engine
+        if decision_engine is not None:
+            self.decision_engine = decision_engine
+        elif config.ENABLE_SIX_PILLAR_SCALPER:
+            from app.six_pillar_engine import six_pillar_engine
+            self.decision_engine = six_pillar_engine
+        else:
+            self.decision_engine = engine
         self.new_entries_enabled = True
         self.alert_callback: Optional[Callable[..., Any]] = None
         self.last_price = 0.0
@@ -220,6 +226,18 @@ class PaperTradingEngine:
                     direction, exit_reason, sl, tp, executable_high, executable_low
                 )
                 self._settle_trade(trade, exit_price, exit_reason)
+            elif hasattr(self.decision_engine, "check_pillar5_exits"):
+                p5_reason = self.decision_engine.check_pillar5_exits(
+                    trade,
+                    {
+                        "close": current_price,
+                        "sma_z": current_price,
+                        "stdev_z": 1.0,
+                        "zscore": 0.0,
+                    },
+                )
+                if p5_reason:
+                    self._settle_trade(trade, current_price, p5_reason)
 
     def _finalize_paper_fill(self, plan: Dict[str, Any], market_data: Dict[str, Any], balance: float) -> Optional[Dict[str, Any]]:
         """Apply a taker fill to a reference-close setup before it is persisted."""

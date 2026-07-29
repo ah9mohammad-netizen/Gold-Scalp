@@ -143,6 +143,46 @@ class SixPillarEngineTests(unittest.TestCase):
         plan3 = self.engine.evaluate(bar, 100.0)
         self.assertIsNone(plan3)
 
+    def test_paper_trader_integration_uses_six_pillar_engine_when_enabled(self) -> None:
+        import os
+        import tempfile
+        from app.database import DatabaseEngine
+        from app.paper_trader import PaperTradingEngine
+
+        tempdir = tempfile.TemporaryDirectory()
+        try:
+            db_inst = DatabaseEngine(os.path.join(tempdir.name, "history.db"))
+            trader = PaperTradingEngine(database=db_inst, decision_engine=self.engine)
+            bar = self.base_bar(hour=8, close=2850.0)
+            bar["asian_high"] = 2853.0
+            bar["high"] = 2854.0
+            bar["close"] = 2852.50
+            bar["open"] = 2853.50
+            bar["bar_timestamp_ms"] = 1_000_000_000_000
+
+            # Process bar to try opening a trade
+            trader.process_new_market_data(bar)
+            opened = db_inst.get_open_trades()
+            self.assertEqual(len(opened), 1)
+            signal_row = db_inst.get_recent_signals(limit=1)[0]
+            self.assertEqual(signal_row["setup_name"], "LIQUIDITY_SWEEP_RECLAIM")
+
+            # Next bar: mean return exit triggered (|Z| <= 0.35) without hitting TP or SL
+            next_bar = self.base_bar(hour=8, close=2851.00)
+            next_bar["high"] = 2851.40
+            next_bar["low"] = 2850.60
+            next_bar["bar_timestamp_ms"] = 1_000_300_000_000
+            next_bar["sma_z"] = 2851.00
+            next_bar["stdev_z"] = 1.0
+            next_bar["zscore"] = 0.1
+            trader.process_new_market_data(next_bar)
+            self.assertEqual(db_inst.get_open_trades(), [])
+            closed = db_inst.get_recent_trades(limit=1)[0]
+            self.assertEqual(closed["exit_reason"], "MEAN_RETURN_EXIT")
+        finally:
+            tempdir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
+
