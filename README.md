@@ -15,6 +15,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 
 ## Research and strategy
 
+- [6-Pillar Institutional XAU-USDT Scalping Framework](SIX_PILLAR_XAUUSD_FRAMEWORK.md) — complete institutional scalping framework addressing fee drag, liquidity sweeps, kill zones, and adaptive mean-return exits
 - [Gold automation research and strategy decision memo](GOLD_AUTOMATION_RESEARCH_2026.md) — strategy families, venue facts, rejected approaches, research gates, and sources
 - [Cost-aware main-history backtest](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) — reproducible 443,451-bar run of the current baseline; negative net result means it remains paper-only
 - [Trade forensics & walk-forward parameter research](TRADE_FORENSICS_AND_OPTIMIZATION.md) — every baseline trade is audited and attempted parameter changes are rejected on unseen data
@@ -44,6 +45,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Set DB_PATH=./history.db locally; add TELEGRAM_* only if wanted.
 python -m unittest discover -s tests -v
+python -m bots.python_xauusdt_6pillar_scalper  # Run 6-Pillar institutional scalping demo
 python -m app.main
 ```
 

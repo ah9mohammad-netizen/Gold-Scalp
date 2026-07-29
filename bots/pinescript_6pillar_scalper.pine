@@ -1,0 +1,128 @@
+//@version=5
+strategy("XAU-USDT 6-Pillar Professional Institutional Scalper [Gold-Scalp]", shorttitle="XAU_6Pillar_Pro", overlay=true, initial_capital=100, default_qty_type=strategy.percent_of_equity, default_qty_value=1.0, commission_type=strategy.commission.percent, commission_value=0.01)
+
+// ==========================================
+// PILLAR 1: VENUE & EXECUTION ECONOMICS
+// ==========================================
+var group_exec = "─── Pillar 1: Execution Economics ───"
+maxSpreadUsd   = input.float(0.25, "Maximum Allowable Spread ($/oz)", group=group_exec)
+useMakerOnly   = input.bool(true, "Prefer Maker Post-Only Limit Entries", group=group_exec)
+
+// ==========================================
+// PILLAR 2: TIME-OF-DAY KILL ZONES
+// ==========================================
+var group_sessions = "─── Pillar 2: Institutional Kill Zones (UTC) ───"
+tokyoKillzone   = input.session("0000-0400", "Tokyo Sweep Kill Zone (00:00-04:00 UTC)", group=group_sessions)
+londonKillzone  = input.session("0700-1000", "London Open Kill Zone (07:00-10:00 UTC)", group=group_sessions)
+nyOverlapZone   = input.session("1200-1600", "London/NY Overlap Kill Zone (12:00-16:00 UTC)", group=group_sessions)
+
+inTokyo   = not na(time(timeframe.period, tokyoKillzone, "UTC"))
+inLondon  = not na(time(timeframe.period, londonKillzone, "UTC"))
+inNY      = not na(time(timeframe.period, nyOverlapZone, "UTC"))
+inKillzone = inTokyo or inLondon or inNY
+
+// Track Asian Session High/Low (00:00-06:30 UTC)
+var float asianHigh = na
+var float asianLow  = na
+inAsianRange = not na(time(timeframe.period, "0000-0630", "UTC"))
+
+if inAsianRange
+    if not inAsianRange[1]
+        asianHigh := high
+        asianLow  := low
+    else
+        asianHigh := math.max(asianHigh, high)
+        asianLow  := math.min(asianLow, low)
+
+// Track Previous Day High/Low
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+
+// ==========================================
+// PILLAR 3: DYNAMIC REGIME GATING
+// ==========================================
+var group_regime = "─── Pillar 3: Dynamic Regime Gating ───"
+adxLen         = input.int(14, "ADX Period", group=group_regime)
+adxRangeMax    = input.float(20.0, "Ranging Regime ADX Threshold", group=group_regime)
+atrLen         = input.int(14, "ATR Period", group=group_regime)
+atrShockMult   = input.float(1.8, "ATR Shock Veto Multiplier", group=group_regime)
+minAtrUsd      = input.float(1.00, "Minimum 5m Candle ATR ($/oz)", group=group_regime)
+
+atr14    = ta.atr(atrLen)
+atr50SMA = ta.sma(atr14, 50)
+[diPlus, diMinus, adx14] = ta.dmi(14, 14)
+
+isShockVeto  = atr14 > atr50SMA * atrShockMult
+isLowVolVeto = atr14 < minAtrUsd
+regimeValid  = not isShockVeto and not isLowVolVeto
+isRanging    = adx14 <= adxRangeMax
+
+// ==========================================
+// PILLAR 4: ICT/SMC LIQUIDITY SWEEP RECLAIM
+// ==========================================
+var group_sweep = "─── Pillar 4: Liquidity Sweep Reclaim ───"
+sweepPierceUsd  = input.float(0.80, "Minimum Sweep Stop-Hunt Pierce ($/oz)", group=group_sweep)
+sweepBufferSl   = input.float(0.50, "Stop Loss Buffer Beyond Sweep ($/oz)", group=group_sweep)
+
+rsi14  = ta.rsi(close, 14)
+sma20  = ta.sma(close, 20)
+stdev20 = ta.stdev(close, 20)
+zscore = stdev20 > 0 ? (close - sma20) / stdev20 : 0.0
+
+// Sweep High & Rejection close back inside -> SHORT
+highLevelSwept = math.max(asianHigh, pdh)
+lowLevelSwept  = math.min(asianLow, pdl)
+
+shortSweepCond = inKillzone and regimeValid and (high >= highLevelSwept + sweepPierceUsd) and (close < highLevelSwept) and (close < open)
+longSweepCond  = inKillzone and regimeValid and (low <= lowLevelSwept - sweepPierceUsd)  and (close > lowLevelSwept)  and (close > open)
+
+// ==========================================
+// PILLAR 5: ADAPTIVE EXITS & TIME KILL SWITCH
+// ==========================================
+var group_exits = "─── Pillar 5: Adaptive Exits ───"
+meanReturnZ     = input.float(0.35, "Mean Return Exit |Z| Threshold", group=group_exits)
+maxHoldingBars  = input.int(6, "Time-Based Kill Switch (Max 5m Bars)", group=group_exits)
+defaultTpRr     = input.float(2.0, "Default Take Profit R:R", group=group_exits)
+beTriggerRr     = input.float(1.2, "Breakeven Trigger R:R", group=group_exits)
+
+// Track bars held in trade
+var int barsHeld = 0
+if strategy.position_size != 0
+    barsHeld := barsHeld + 1
+else
+    barsHeld := 0
+
+// Execute Long Entry
+if longSweepCond and strategy.position_size == 0
+    slDist = math.max(1.5, (close - low) + sweepBufferSl)
+    slPrice = close - slDist
+    tpPrice = close + (slDist * defaultTpRr)
+    strategy.entry("6Pillar_Long", strategy.long)
+    strategy.exit("6Pillar_Long_SL", from_entry="6Pillar_Long", stop=slPrice, limit=tpPrice)
+
+// Execute Short Entry
+if shortSweepCond and strategy.position_size == 0
+    slDist = math.max(1.5, (high - close) + sweepBufferSl)
+    slPrice = close + slDist
+    tpPrice = close - (slDist * defaultTpRr)
+    strategy.entry("6Pillar_Short", strategy.short)
+    strategy.exit("6Pillar_Short_SL", from_entry="6Pillar_Short", stop=slPrice, limit=tpPrice)
+
+// Pillar 5: Mean-Return Exit (|Z| <= meanReturnZ or SMA cross)
+if strategy.position_size > 0 and (close >= sma20 or math.abs(zscore) <= meanReturnZ)
+    strategy.close("6Pillar_Long", comment="MeanReturn_Exit")
+if strategy.position_size < 0 and (close <= sma20 or math.abs(zscore) <= meanReturnZ)
+    strategy.close("6Pillar_Short", comment="MeanReturn_Exit")
+
+// Pillar 5: Time-Based Kill Switch (Max 6 bars / 30 mins)
+if barsHeld >= maxHoldingBars
+    if strategy.position_size > 0
+        strategy.close("6Pillar_Long", comment="Time_KillSwitch")
+    if strategy.position_size < 0
+        strategy.close("6Pillar_Short", comment="Time_KillSwitch")
+
+// Plot Structural Liquidity Pools
+plot(asianHigh, title="Asian High", color=color.red, style=plot.style_stepline, linewidth=2)
+plot(asianLow,  title="Asian Low",  color=color.green, style=plot.style_stepline, linewidth=2)
+plot(sma20,     title="SMA 20 Mean", color=color.blue, linewidth=1)
+bgcolor(inKillzone ? color.new(color.blue, 92) : na, title="6-Pillar Killzone")
