@@ -147,6 +147,7 @@ class AppConfig:
     # a mid-price-only ledger is not suitable for deciding whether to go live.
     ROUND_TRIP_COST_USD: float = float(os.getenv("ROUND_TRIP_COST_USD", "0.40"))
     PAPER_TAKER_FEE_RATE: float = float(os.getenv("PAPER_TAKER_FEE_RATE", "0.0004"))
+    PAPER_MAKER_FEE_RATE: float = float(os.getenv("PAPER_MAKER_FEE_RATE", "0.0001"))
     PAPER_SLIPPAGE_USD: float = float(os.getenv("PAPER_SLIPPAGE_USD", "0.03"))
     MIN_SL_COST_MULTIPLE: float = float(os.getenv("MIN_SL_COST_MULTIPLE", "5.0"))
     MIN_TP_COST_MULTIPLE: float = float(os.getenv("MIN_TP_COST_MULTIPLE", "8.0"))

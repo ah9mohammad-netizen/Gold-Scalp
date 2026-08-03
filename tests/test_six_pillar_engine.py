@@ -167,12 +167,12 @@ class SixPillarEngineTests(unittest.TestCase):
             signal_row = db_inst.get_recent_signals(limit=1)[0]
             self.assertEqual(signal_row["setup_name"], "LIQUIDITY_SWEEP_RECLAIM")
 
-            # Next bar: mean return exit triggered (|Z| <= 0.35) without hitting TP or SL
-            next_bar = self.base_bar(hour=8, close=2851.00)
-            next_bar["high"] = 2851.40
-            next_bar["low"] = 2850.60
+            # Next bar: mean return exit triggered (|Z| <= 0.35) and profit ($2.90/oz) clears RT fee hurdle
+            next_bar = self.base_bar(hour=8, close=2849.60)
+            next_bar["high"] = 2850.50
+            next_bar["low"] = 2849.00
             next_bar["bar_timestamp_ms"] = 1_000_300_000_000
-            next_bar["sma_z"] = 2851.00
+            next_bar["sma_z"] = 2850.00
             next_bar["stdev_z"] = 1.0
             next_bar["zscore"] = 0.1
             trader.process_new_market_data(next_bar)

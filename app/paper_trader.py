@@ -126,6 +126,9 @@ class PaperTradingEngine:
             return round(max(sl, executable_high) + slip, 4)
         return round(tp + slip, 4)
 
+    def _get_fee_rate(self) -> float:
+        return config.PAPER_MAKER_FEE_RATE if config.ENABLE_SIX_PILLAR_SCALPER else config.PAPER_TAKER_FEE_RATE
+
     def _settle_trade(
         self,
         trade: Dict[str, Any],
@@ -137,7 +140,7 @@ class PaperTradingEngine:
         direction = str(trade["direction"])
         leverage = int(trade["leverage"] or config.MAX_LEVERAGE)
         entry_fee = float(trade.get("entry_fee_usd") or 0.0)
-        exit_fee = exit_price * size * config.PAPER_TAKER_FEE_RATE
+        exit_fee = exit_price * size * self._get_fee_rate()
         gross = (exit_price - entry) * size if direction == "LONG" else (entry - exit_price) * size
         net = gross - entry_fee - exit_fee
         pnl_pct = self._pnl_pct(net, entry, size, leverage)
@@ -259,7 +262,7 @@ class PaperTradingEngine:
             sl, tp1, tp2 = fill + sl_distance, fill - be_distance, fill - tp_distance
         size = float(final["size_oz"])
         margin = fill * size / max(config.MAX_LEVERAGE, 1)
-        entry_fee = fill * size * config.PAPER_TAKER_FEE_RATE
+        entry_fee = fill * size * self._get_fee_rate()
         # The margin cap must hold after the adverse entry fill, too.
         cap = balance * (config.MARGIN_CAP_PCT / 100.0)
         if margin > cap:
@@ -267,7 +270,7 @@ class PaperTradingEngine:
             if size < 0.01:
                 return None
             margin = fill * size / max(config.MAX_LEVERAGE, 1)
-            entry_fee = fill * size * config.PAPER_TAKER_FEE_RATE
+            entry_fee = fill * size * self._get_fee_rate()
         if margin + entry_fee > balance:
             return None
         final.update(

@@ -236,6 +236,11 @@ class SixPillarDecisionEngine:
         bullish_bar = price > open_px
         bearish_bar = price < open_px
 
+        # -------------------------------------------------------------
+        # Pillar 1 & 4: Fee Immunity Reference Cost
+        # -------------------------------------------------------------
+        rt_cost_oz = (price * (self.config.TAKER_FEE_RATE * 2.0)) + spread
+
         # 4A. Liquidity Sweep Reclaim (Asian High/Low or PDH/PDL Sweep Absorption)
         # Check High sweep & bearish close back inside structure -> SHORT
         high_levels = [lvl for lvl in (asian_high, pdh) if lvl > 0]
@@ -253,7 +258,8 @@ class SixPillarDecisionEngine:
                 break
 
         if swept_high_lvl is not None:
-            if regime in ("RANGING", "TRENDING", "NEUTRAL") or rsi > 65.0 or force:
+            est_tp_dist = max(self.config.MIN_SL_USD, (high - swept_high_lvl) + self.config.SWEEP_BUFFER_SL_USD) * self.config.DEFAULT_TP_RR
+            if (regime in ("RANGING", "TRENDING", "NEUTRAL") or rsi > 65.0 or force) and (est_tp_dist >= rt_cost_oz * 1.2 or force):
                 bias = "SHORT"
                 setup_name = "LIQUIDITY_SWEEP_RECLAIM"
                 sweep_reference_level = swept_high_lvl
@@ -263,7 +269,8 @@ class SixPillarDecisionEngine:
                     f"closed inside @ ${price:.2f} | RSI={rsi:.1f} | {regime}"
                 )
         elif swept_low_lvl is not None:
-            if regime in ("RANGING", "TRENDING", "NEUTRAL") or rsi < 35.0 or force:
+            est_tp_dist = max(self.config.MIN_SL_USD, (swept_low_lvl - low) + self.config.SWEEP_BUFFER_SL_USD) * self.config.DEFAULT_TP_RR
+            if (regime in ("RANGING", "TRENDING", "NEUTRAL") or rsi < 35.0 or force) and (est_tp_dist >= rt_cost_oz * 1.2 or force):
                 bias = "LONG"
                 setup_name = "LIQUIDITY_SWEEP_RECLAIM"
                 sweep_reference_level = swept_low_lvl
@@ -412,22 +419,33 @@ class SixPillarDecisionEngine:
         bars_held: int = 0,
     ) -> Optional[str]:
         """
-        Pillar 5: Adaptive Exits & Time-Based Kill Switch.
+        Pillar 5: Adaptive Exits & Time-Based Kill Switch with Fee-Immunity Gate.
         Returns exit reason string ('MEAN_RETURN_EXIT', 'TIME_KILL_SWITCH', etc.) or None.
         """
         direction = str(trade.get("direction", "LONG"))
         setup_name = str(trade.get("setup_name", ""))
         price = float(current_bar.get("close", 0.0))
+        entry_price = float(trade.get("entry_price", price))
+        size_oz = float(trade.get("size_oz", 0.0))
         sma = float(current_bar.get("sma_z", current_bar.get("sma_20", price)))
         stdev = float(current_bar.get("stdev_z", current_bar.get("stdev_20", 0.0)))
         zscore = float(current_bar.get("zscore", 0.0))
         if stdev > 1e-9 and "zscore" not in current_bar:
             zscore = (price - sma) / stdev
 
-        # 1. Mean-Return Exit for reversion / sweep reclaim setups
-        if not setup_name or setup_name in ("LIQUIDITY_SWEEP_RECLAIM", "ZSCORE_SWEEP_RECLAIM", "ZSCORE_MR", "None"):
+        # Fee-Immunity Gate: Calculate gross profit and estimated round-trip fee
+        fee_cleared = True
+        if size_oz > 0 and entry_price > 0:
+            gross_profit_usd = (price - entry_price) * size_oz if direction == "LONG" else (entry_price - price) * size_oz
+            entry_fee = float(trade.get("entry_fee_usd", 0.0))
+            est_rt_fee_usd = entry_fee * 2.0 if entry_fee > 0 else (price * size_oz * self.config.MAKER_FEE_RATE * 2.0)
+            if gross_profit_usd < est_rt_fee_usd * 1.15:
+                fee_cleared = False
+
+        # 1. Mean-Return Exit for reversion / sweep reclaim setups (ONLY if fee hurdle is cleared)
+        if fee_cleared and (not setup_name or setup_name in ("LIQUIDITY_SWEEP_RECLAIM", "ZSCORE_SWEEP_RECLAIM", "ZSCORE_MR", "None")):
             if abs(zscore) <= self.config.MEAN_RETURN_EXIT_Z:
-                logger.info("🎯 Pillar 5 Mean-Return Exit triggered (Z=%.2f <= %.2f)", zscore, self.config.MEAN_RETURN_EXIT_Z)
+                logger.info("🎯 Pillar 5 Mean-Return Exit triggered (Z=%.2f <= %.2f, profit cleared fee hurdle)", zscore, self.config.MEAN_RETURN_EXIT_Z)
                 return "MEAN_RETURN_EXIT"
             # Crosses over session SMA/VWAP
             if direction == "LONG" and price >= sma and sma > 0:
