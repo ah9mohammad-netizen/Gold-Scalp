@@ -30,6 +30,30 @@ class MarketDataTests(unittest.TestCase):
         self.assertFalse(tick["is_proxy"])
         self.assertAlmostEqual(tick["spread"], 0.4, places=4)
 
+    def test_previous_day_levels_require_and_use_a_complete_utc_day(self) -> None:
+        feed = LiveMarketDataFeed()
+        period_ms = feed.timeframe_seconds * 1000
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        current_open = (now_ms // period_ms) * period_ms
+        rows = []
+        for index in range(601):
+            timestamp = current_open - (600 - index) * period_ms
+            dt = datetime.fromtimestamp(timestamp / 1000.0, tz=timezone.utc)
+            base = 3000.0
+            # Give the previous UTC day unique, deterministic extremes.
+            latest_complete_day = datetime.fromtimestamp(
+                (current_open - period_ms) / 1000.0, tz=timezone.utc
+            ).date()
+            if dt.date().isoformat() < latest_complete_day.isoformat():
+                base = 2990.0
+            rows.append([timestamp, base, base + 2.0, base - 2.0, base + 0.5, 10.0])
+
+        tick = feed._build_tick_result("TEST_DIRECT", "XAUUSDT", rows, 3000.0, 3000.2)
+        self.assertIsNotNone(tick)
+        assert tick is not None
+        self.assertGreater(float(tick["pdh"]), 0.0)
+        self.assertGreater(float(tick["pdh"]), float(tick["pdl"]))
+
 
 if __name__ == "__main__":
     unittest.main()

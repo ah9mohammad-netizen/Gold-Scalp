@@ -145,6 +145,8 @@ class LiveMarketDataFeed:
         ema_200 = self.tech.calculate_ema(closes, config.EMA_TREND_PERIOD)
         ema_50 = self.tech.calculate_ema(closes, config.EMA_FAST_PERIOD)
         ema_21 = self.tech.calculate_ema(closes, config.EMA_PULLBACK_PERIOD)
+        ema_50_prev = self.tech.calculate_ema(closes[:-1], config.EMA_FAST_PERIOD)
+        ema_21_prev = self.tech.calculate_ema(closes[:-1], config.EMA_PULLBACK_PERIOD)
         atr_14 = self.tech.calculate_atr(highs, lows, closes, config.ATR_PERIOD)
         rsi_14 = self.tech.calculate_rsi(closes, config.RSI_PERIOD)
         adx, plus_di, minus_di = self.tech.calculate_adx(highs, lows, closes, config.ADX_PERIOD)
@@ -155,9 +157,11 @@ class LiveMarketDataFeed:
         atr_window = atr_values[-config.ATR_AVG_LOOKBACK :] or [atr_14]
         atr_avg = sum(atr_window) / len(atr_window)
 
-        # Indicators based on the current UTC day's closed bars only.
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        day_indexes = [i for i, ts in enumerate(timestamps) if _bar_date_utc(ts) == today]
+        # Indicators based on the latest candle's UTC day.  Using wall-clock
+        # ``today`` made replay/backtest ticks build session levels from the
+        # wrong date and also made a delayed feed less deterministic.
+        latest_day = _bar_date_utc(latest_bar_ms)
+        day_indexes = [i for i, ts in enumerate(timestamps) if _bar_date_utc(ts) == latest_day]
         if not day_indexes:
             day_indexes = list(range(max(0, len(rows) - 72), len(rows)))
         vwap_num = vwap_den = 0.0
@@ -171,17 +175,33 @@ class LiveMarketDataFeed:
         asian = [
             i
             for i, ts in enumerate(timestamps)
-            if _bar_date_utc(ts) == today
+            if _bar_date_utc(ts) == latest_day
             and config.ASIAN_START_HOUR_UTC <= _bar_hour_utc(ts) < config.ASIAN_END_HOUR_UTC
         ]
         asian_high = max((highs[i] for i in asian), default=max(highs[-min(72, len(highs)) :]))
         asian_low = min((lows[i] for i in asian), default=min(lows[-min(72, len(lows)) :]))
-        now_hour = datetime.now(timezone.utc).hour
+        latest_hour = _bar_hour_utc(latest_bar_ms)
+
+        # Previous-day extremes are objective liquidity references for v7.  No
+        # fallback is invented when the feed does not contain a prior UTC day.
+        available_days = sorted({_bar_date_utc(ts) for ts in timestamps if _bar_date_utc(ts) < latest_day})
+        previous_day = available_days[-1] if available_days else ""
+        previous_day_indexes = [
+            i for i, ts in enumerate(timestamps) if previous_day and _bar_date_utc(ts) == previous_day
+        ]
+        previous_hours = {_bar_hour_utc(timestamps[i]) for i in previous_day_indexes}
+        previous_day_complete = (
+            len(previous_day_indexes) >= 240
+            and any(hour <= 1 for hour in previous_hours)
+            and any(hour >= 22 for hour in previous_hours)
+        )
+        pdh = max((highs[i] for i in previous_day_indexes), default=0.0) if previous_day_complete else 0.0
+        pdl = min((lows[i] for i in previous_day_indexes), default=0.0) if previous_day_complete else 0.0
 
         ny_orb = [
             i
             for i, ts in enumerate(timestamps)
-            if _bar_date_utc(ts) == today
+            if _bar_date_utc(ts) == latest_day
             and config.NY_ORB_START_HOUR_UTC <= _bar_hour_utc(ts) < config.NY_ORB_END_HOUR_UTC
         ]
         tick: Dict[str, Any] = {
@@ -211,6 +231,8 @@ class LiveMarketDataFeed:
             "ema_200": round(ema_200, 4),
             "ema_50": round(ema_50, 4),
             "ema_21": round(ema_21, 4),
+            "ema_50_prev": round(ema_50_prev, 4),
+            "ema_21_prev": round(ema_21_prev, 4),
             "sma_z": round(sma_z, 4),
             "sma_20": round(sma_z, 4),
             "stdev_z": round(stdev_z, 6),
@@ -219,10 +241,12 @@ class LiveMarketDataFeed:
             "vwap": round(vwap, 4),
             "asian_high": round(asian_high, 4),
             "asian_low": round(asian_low, 4),
-            "asian_range_ready": len(asian) >= 6 and now_hour >= config.ASIAN_END_HOUR_UTC,
+            "asian_range_ready": len(asian) >= 6 and latest_hour >= config.ASIAN_END_HOUR_UTC,
+            "pdh": round(pdh, 4),
+            "pdl": round(pdl, 4),
             "ny_orb_high": round(max((highs[i] for i in ny_orb), default=0.0), 4),
             "ny_orb_low": round(min((lows[i] for i in ny_orb), default=0.0), 4),
-            "ny_orb_ready": len(ny_orb) >= 6 and now_hour >= config.NY_ORB_DECISION_HOUR_UTC,
+            "ny_orb_ready": len(ny_orb) >= 6 and latest_hour >= config.NY_ORB_DECISION_HOUR_UTC,
             "prev_close": round(closes[-2], 4),
             "prev_close_2": round(closes[-3], 4),
             "prev_high": round(highs[-2], 4),
@@ -257,7 +281,7 @@ class LiveMarketDataFeed:
     def _fetch_bybit_rest_sync(self) -> Optional[Dict[str, Any]]:
         data = _http_get_json(
             "https://api.bybit.com/v5/market/kline?category=linear&symbol=XAUUSDT"
-            f"&interval={self._bybit_interval()}&limit=300"
+            f"&interval={self._bybit_interval()}&limit=600"
         )
         if not data or data.get("retCode") != 0:
             return None
@@ -296,7 +320,8 @@ class LiveMarketDataFeed:
             try:
                 exchange_class = getattr(ccxt, exchange_id)
                 exchange = exchange_class({"timeout": 8000, "enableRateLimit": True})
-                rows = exchange.fetch_ohlcv(symbol, timeframe=config.TIMEFRAME, limit=300)
+                history_limit = 600 if exchange_id == "bybit" else 300
+                rows = exchange.fetch_ohlcv(symbol, timeframe=config.TIMEFRAME, limit=history_limit)
                 ticker = exchange.fetch_ticker(symbol)
                 bid, ask = float(ticker.get("bid") or 0), float(ticker.get("ask") or 0)
                 tick = self._build_tick_result(

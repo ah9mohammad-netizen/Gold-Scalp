@@ -209,9 +209,13 @@ class SixPillarDecisionEngine:
         # -------------------------------------------------------------
         # Pillar 6: Frequency & Session Cap
         # -------------------------------------------------------------
-        session_count = self._session_trades_count.get(session_name, 0)
+        # Include the UTC date.  The original key used only ``session_name``;
+        # after two London plans a long-running Railway process silently
+        # blocked every future London session until it restarted.
+        session_key = f"{current_time.astimezone(timezone.utc).date().isoformat()}:{session_name}"
+        session_count = self._session_trades_count.get(session_key, 0)
         if session_count >= self.config.MAX_TRADES_PER_SESSION and not force:
-            logger.debug("Reject: session trade limit (%d) reached for %s", self.config.MAX_TRADES_PER_SESSION, session_name)
+            logger.debug("Reject: session trade limit (%d) reached for %s", self.config.MAX_TRADES_PER_SESSION, session_key)
             return None
 
         # -------------------------------------------------------------
@@ -361,8 +365,14 @@ class SixPillarDecisionEngine:
                 return None
             required_margin = round((price * size_oz) / self.config.MAX_LEVERAGE, 2)
 
-        # Update session count tracking
-        self._session_trades_count[session_name] = session_count + 1
+        # Update the date-scoped session count and discard stale dates.
+        self._session_trades_count[session_key] = session_count + 1
+        active_date_prefix = f"{current_time.astimezone(timezone.utc).date().isoformat()}:"
+        self._session_trades_count = {
+            key: value
+            for key, value in self._session_trades_count.items()
+            if key.startswith(active_date_prefix)
+        }
 
         ts = current_time.isoformat()
         plan: Dict[str, Any] = {
@@ -433,9 +443,12 @@ class SixPillarDecisionEngine:
         if stdev > 1e-9 and "zscore" not in current_bar:
             zscore = (price - sma) / stdev
 
-        # Fee-Immunity Gate: Calculate gross profit and estimated round-trip fee
+        # Fee-Immunity Gate: prefer the executor's bid/ask/slippage/fee-aware
+        # net estimate.  Direct engine callers retain the older fee estimate.
         fee_cleared = True
-        if size_oz > 0 and entry_price > 0:
+        if "estimated_net_pnl_usd" in current_bar:
+            fee_cleared = float(current_bar["estimated_net_pnl_usd"]) >= 0.03
+        elif size_oz > 0 and entry_price > 0:
             gross_profit_usd = (price - entry_price) * size_oz if direction == "LONG" else (entry_price - price) * size_oz
             entry_fee = float(trade.get("entry_fee_usd", 0.0))
             est_rt_fee_usd = entry_fee * 2.0 if entry_fee > 0 else (price * size_oz * self.config.MAKER_FEE_RATE * 2.0)

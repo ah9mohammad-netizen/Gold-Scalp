@@ -5,9 +5,10 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - Starts with a persistent **100 USDT** paper account
 - Uses direct XAU-USDT feeds (Bybit first; OKX fallback); it does **not** silently substitute PAXG
 - Evaluates each **closed 5-minute candle once** to avoid intrabar look-ahead/repeated polling signals
-- Uses a range-only Z-score mean-reversion baseline: Z ±2.2, ADX ≤18, turn bar, ATR SL, fixed 2R target
-- Simulates bid/ask execution, slippage, and taker fees; stores gross and **net** results
-- Persists signals, trades, account history, and state in `/data/history.db`
+- Supports the v7 adaptive-session forward-paper router: tagged liquidity, trend, momentum, and range-reclaim setups
+- Sizes v7 positions from stop distance **plus estimated round-trip costs**, with a 0.50% effective risk cap
+- Simulates bid/ask execution, slippage, and explicitly selected taker/maker fees; stores gross and **net** results
+- Persists setup, regime, score, costs, holding limits, trades, account history, and state in `/data/history.db`
 - Offers Telegram alerts, pause/resume, trade/status commands, and `/get_db` SQLite export
 - **Cannot trade live.** The app refuses `PAPER_TRADING=false` until an independently reviewed ApeX executor exists.
 
@@ -15,7 +16,8 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 
 ## Research and strategy
 
-- [6-Pillar Institutional XAU-USDT Scalping Framework](SIX_PILLAR_XAUUSD_FRAMEWORK.md) — complete institutional scalping framework addressing fee drag, liquidity sweeps, kill zones, and adaptive mean-return exits
+- [v7 adaptive-session forward-paper specification](STRATEGY_V7.md) — strategy rewrite, frequency defect diagnosis, score router, cost-inclusive sizing, real-indicator exits, and frozen evaluation protocol
+- [6-Pillar Institutional XAU-USDT Scalping Framework](SIX_PILLAR_XAUUSD_FRAMEWORK.md) — prior v6 experiment retained for audit; it is not the recommended Railway strategy
 - [Gold automation research and strategy decision memo](GOLD_AUTOMATION_RESEARCH_2026.md) — strategy families, venue facts, rejected approaches, research gates, and sources
 - [Cost-aware main-history backtest](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) — reproducible 443,451-bar run of the current baseline; negative net result means it remains paper-only
 - [Trade forensics & walk-forward parameter research](TRADE_FORENSICS_AND_OPTIMIZATION.md) — every baseline trade is audited and attempted parameter changes are rejected on unseen data
@@ -45,7 +47,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Set DB_PATH=./history.db locally; add TELEGRAM_* only if wanted.
 python -m unittest discover -s tests -v
-python -m bots.python_xauusdt_6pillar_scalper  # Run 6-Pillar institutional scalping demo
+# .env.example selects STRATEGY_VERSION=v7-adaptive-session-scalper
 python -m app.main
 ```
 

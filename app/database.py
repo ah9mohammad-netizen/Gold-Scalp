@@ -75,6 +75,11 @@ class DatabaseEngine:
                     source TEXT,
                     strategy_version TEXT,
                     setup_name TEXT,
+                    session_name TEXT,
+                    regime TEXT,
+                    signal_score INTEGER,
+                    expected_cost_usd REAL,
+                    expected_net_reward_usd REAL,
                     reference_price REAL,
                     symbol TEXT NOT NULL,
                     direction TEXT NOT NULL,
@@ -106,15 +111,26 @@ class DatabaseEngine:
                     candle_timestamp_ms INTEGER,
                     symbol TEXT NOT NULL,
                     direction TEXT NOT NULL,
+                    strategy_version TEXT,
+                    setup_name TEXT,
+                    session_name TEXT,
+                    regime TEXT,
+                    signal_score INTEGER,
                     reference_price REAL,
                     entry_price REAL NOT NULL,
                     sl_price REAL NOT NULL,
+                    initial_sl_price REAL,
                     tp1_price REAL NOT NULL,
                     tp2_price REAL NOT NULL,
                     size_oz REAL NOT NULL,
                     leverage INTEGER NOT NULL,
                     required_margin_usd REAL NOT NULL,
                     entry_fee_usd REAL NOT NULL DEFAULT 0.0,
+                    fee_rate REAL,
+                    entry_atr REAL,
+                    initial_risk_usd REAL,
+                    expected_cost_usd REAL,
+                    max_holding_bars INTEGER,
                     opened_at TEXT NOT NULL,
                     closed_at TEXT,
                     exit_price REAL,
@@ -161,6 +177,11 @@ class DatabaseEngine:
                     "source": "TEXT",
                     "strategy_version": "TEXT",
                     "setup_name": "TEXT",
+                    "session_name": "TEXT",
+                    "regime": "TEXT",
+                    "signal_score": "INTEGER",
+                    "expected_cost_usd": "REAL",
+                    "expected_net_reward_usd": "REAL",
                     "reference_price": "REAL",
                     "zscore": "REAL",
                     "adx": "REAL",
@@ -174,8 +195,19 @@ class DatabaseEngine:
                 {
                     "source": "TEXT",
                     "candle_timestamp_ms": "INTEGER",
+                    "strategy_version": "TEXT",
+                    "setup_name": "TEXT",
+                    "session_name": "TEXT",
+                    "regime": "TEXT",
+                    "signal_score": "INTEGER",
                     "reference_price": "REAL",
+                    "initial_sl_price": "REAL",
                     "entry_fee_usd": "REAL NOT NULL DEFAULT 0.0",
+                    "fee_rate": "REAL",
+                    "entry_atr": "REAL",
+                    "initial_risk_usd": "REAL",
+                    "expected_cost_usd": "REAL",
+                    "max_holding_bars": "INTEGER",
                     "exit_fee_usd": "REAL NOT NULL DEFAULT 0.0",
                     "gross_pnl_usd": "REAL",
                 },
@@ -257,7 +289,8 @@ class DatabaseEngine:
             mark = float(mark_price) if mark_price > 0 else entry
             gross = (mark - entry) * size if trade["direction"] == "LONG" else (entry - mark) * size
             entry_fee = float(trade.get("entry_fee_usd") or 0.0)
-            estimated_exit_fee = mark * size * config.PAPER_TAKER_FEE_RATE
+            fee_rate = float(trade.get("fee_rate") or config.paper_fee_rate)
+            estimated_exit_fee = mark * size * fee_rate
             unrealized += gross - entry_fee - estimated_exit_fee
             used_margin += float(trade["required_margin_usd"])
         equity = balance + unrealized
@@ -291,11 +324,13 @@ class DatabaseEngine:
             cursor = conn.execute(
                 """
                 INSERT INTO signals (
-                    timestamp, bar_timestamp_ms, source, strategy_version, setup_name, reference_price,
-                    symbol, direction, entry_price, sl_price, tp1_price, tp2_price,
-                    size_oz, leverage, dollar_risk, zscore, adx, atr_usd, spread_usd,
-                    layer1_regime, layer2_structure, layer3_momentum, status, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    timestamp, bar_timestamp_ms, source, strategy_version, setup_name,
+                    session_name, regime, signal_score, expected_cost_usd,
+                    expected_net_reward_usd, reference_price, symbol, direction,
+                    entry_price, sl_price, tp1_price, tp2_price, size_oz, leverage,
+                    dollar_risk, zscore, adx, atr_usd, spread_usd, layer1_regime,
+                    layer2_structure, layer3_momentum, status, reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     signal_data["timestamp"],
@@ -303,6 +338,11 @@ class DatabaseEngine:
                     signal_data.get("source"),
                     signal_data.get("strategy_version"),
                     signal_data.get("setup_name"),
+                    signal_data.get("session_name", signal_data.get("killzone_session")),
+                    signal_data.get("regime"),
+                    signal_data.get("signal_score"),
+                    signal_data.get("expected_cost_usd"),
+                    signal_data.get("expected_net_reward_usd"),
                     signal_data.get("reference_price"),
                     signal_data["symbol"],
                     signal_data["direction"],
@@ -337,10 +377,13 @@ class DatabaseEngine:
             cursor = conn.execute(
                 """
                 INSERT INTO trades (
-                    signal_id, source, candle_timestamp_ms, symbol, direction, reference_price,
-                    entry_price, sl_price, tp1_price, tp2_price, size_oz, leverage,
-                    required_margin_usd, entry_fee_usd, opened_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+                    signal_id, source, candle_timestamp_ms, symbol, direction,
+                    strategy_version, setup_name, session_name, regime, signal_score,
+                    reference_price, entry_price, sl_price, initial_sl_price,
+                    tp1_price, tp2_price, size_oz, leverage, required_margin_usd,
+                    entry_fee_usd, fee_rate, entry_atr, initial_risk_usd,
+                    expected_cost_usd, max_holding_bars, opened_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
                 """,
                 (
                     trade_data.get("signal_id"),
@@ -348,15 +391,26 @@ class DatabaseEngine:
                     trade_data.get("bar_timestamp_ms"),
                     trade_data["symbol"],
                     trade_data["direction"],
+                    trade_data.get("strategy_version"),
+                    trade_data.get("setup_name"),
+                    trade_data.get("session_name", trade_data.get("killzone_session")),
+                    trade_data.get("regime"),
+                    trade_data.get("signal_score"),
                     trade_data.get("reference_price"),
                     trade_data["entry_price"],
                     trade_data["sl_price"],
+                    trade_data.get("initial_sl_price", trade_data["sl_price"]),
                     trade_data["tp1_price"],
                     trade_data["tp2_price"],
                     trade_data["size_oz"],
                     trade_data["leverage"],
                     trade_data["required_margin_usd"],
                     trade_data.get("entry_fee_usd", 0.0),
+                    trade_data.get("fee_rate"),
+                    trade_data.get("atr_at_entry"),
+                    trade_data.get("dollar_risk"),
+                    trade_data.get("expected_cost_usd"),
+                    trade_data.get("max_holding_bars"),
                     trade_data["opened_at"],
                 ),
             )
@@ -486,6 +540,25 @@ class DatabaseEngine:
                     "SELECT exit_reason, COUNT(*) AS count FROM trades WHERE status='CLOSED' GROUP BY exit_reason"
                 ).fetchall()
             }
+            setup_rows = conn.execute(
+                """
+                SELECT COALESCE(setup_name, 'LEGACY_UNTAGGED') AS setup_name,
+                       COUNT(*) AS count,
+                       COALESCE(SUM(pnl_usd), 0.0) AS pnl,
+                       COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins
+                FROM trades WHERE status='CLOSED'
+                GROUP BY COALESCE(setup_name, 'LEGACY_UNTAGGED')
+                ORDER BY count DESC, setup_name
+                """
+            ).fetchall()
+            setup_breakdown = {
+                str(row["setup_name"]): {
+                    "trades": int(row["count"] or 0),
+                    "wins": int(row["wins"] or 0),
+                    "pnl_usd": round(float(row["pnl"] or 0.0), 2),
+                }
+                for row in setup_rows
+            }
 
         balance = self.get_current_balance()
         initial = self.get_initial_balance()
@@ -506,6 +579,7 @@ class DatabaseEngine:
             "current_balance": round(balance, 2),
             "initial_balance": round(initial, 2),
             "exit_breakdown": reasons,
+            "setup_breakdown": setup_breakdown,
             "db_path": self.db_path,
         }
 

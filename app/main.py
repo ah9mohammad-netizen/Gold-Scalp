@@ -117,16 +117,27 @@ async def main() -> None:
     if db.get_state("paused", "false").lower() not in ("true", "1", "yes"):
         paper_trader.new_entries_enabled = True
 
+    effective_risk = (
+        min(config.RISK_PER_TRADE_PCT, config.V7_RISK_CAP_PCT)
+        if config.ENABLE_ADAPTIVE_SCALPER
+        else config.RISK_PER_TRADE_PCT
+    )
+    strategy_summary = (
+        "Adaptive session router: liquidity · trend · range"
+        if config.ENABLE_ADAPTIVE_SCALPER
+        else "Legacy strategy path (see repository research warnings)"
+    )
     await telegram_ui.send_message(
-        "🟢 <b>Gold Edge v5 Online 24/7</b>\n\n"
+        "🟢 <b>Gold Edge Paper Research Online</b>\n\n"
         f"• Strategy: <code>{config.STRATEGY_VERSION}</code>\n"
         f"• Env: <b>Railway ({config.ENV})</b>\n"
         f"• Balance: <b>${db.get_current_balance():.2f} USDT</b>\n"
         f"• Pair: <b>{config.SYMBOL}</b> · <b>{config.MAX_LEVERAGE}x</b>\n"
-        f"• Setup: Z-Score MR (range-only ADX≤{config.ADX_RANGE_MAX:.0f})\n"
-        f"• Z±{config.ZSCORE_ENTRY} · SL {config.SL_ATR_MULTIPLIER}×ATR · "
-        f"TP {config.TP_RR_RATIO:.1f}R · risk {config.RISK_PER_TRADE_PCT}%\n"
+        f"• Setup: {strategy_summary}\n"
+        f"• Risk cap: <b>{effective_risk:.2f}%</b> · fees: "
+        f"<b>{config.PAPER_EXECUTION_MODE}</b>\n"
         f"• DB: <code>{db.db_path}</code>\n"
+        "• PAPER ONLY · no validated profit claim\n"
         "• /help · /status · /get_db · /stats"
     )
 

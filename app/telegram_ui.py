@@ -203,13 +203,23 @@ class TelegramUI:
         cmd_lower = command.lower().split()[0].split("@")[0]
 
         if cmd_lower in ("/start", "/help"):
+            effective_risk = (
+                min(config.RISK_PER_TRADE_PCT, config.V7_RISK_CAP_PCT)
+                if config.ENABLE_ADAPTIVE_SCALPER
+                else config.RISK_PER_TRADE_PCT
+            )
+            family = (
+                "Adaptive liquidity/trend/range session router"
+                if config.ENABLE_ADAPTIVE_SCALPER
+                else "Legacy research strategy"
+            )
             msg = (
-                "🪙 <b>XAU-USDT Gold Edge v5</b>\n"
+                "🪙 <b>XAU-USDT Gold Edge Paper Research</b>\n"
                 f"<code>{config.STRATEGY_VERSION}</code>\n\n"
-                "Z-Score mean reversion (range-only) · research-validated\n"
-                f"Z±{config.ZSCORE_ENTRY} · ADX≤{config.ADX_RANGE_MAX:.0f} · "
-                f"SL {config.SL_ATR_MULTIPLIER}×ATR · TP {config.TP_RR_RATIO:.1f}R\n"
-                f"Risk {config.RISK_PER_TRADE_PCT}% · $100 paper · Railway 24/7\n\n"
+                f"{family}\n"
+                f"Risk cap {effective_risk:.2f}% · fees {config.PAPER_EXECUTION_MODE} · "
+                f"max {config.MAX_TRADES_PER_DAY}/day\n"
+                "Forward-paper experiment; no validated profit claim.\n\n"
                 "<b>Commands</b>\n"
                 "• /status — bot, price, strategy, DB\n"
                 "• /balance — equity & risk\n"
@@ -267,8 +277,18 @@ class TelegramUI:
                 age = (datetime.now(timezone.utc) - paper_trader.last_tick_at).total_seconds()
                 tick_age = f" ({int(age)}s ago)"
             lt = market_feed.last_tick or {}
+            evaluation = getattr(paper_trader.decision_engine, "last_evaluation", {}) or {}
+            gate_text = str(evaluation.get("reason", "n/a"))
+            gate_score = evaluation.get("score", evaluation.get("best_score"))
+            if gate_score is not None:
+                gate_text += f" (score {gate_score})"
+            effective_risk = (
+                min(config.RISK_PER_TRADE_PCT, config.V7_RISK_CAP_PCT)
+                if config.ENABLE_ADAPTIVE_SCALPER
+                else config.RISK_PER_TRADE_PCT
+            )
             msg = (
-                "⚙️ <b>Gold Edge v5 Status</b>\n\n"
+                "⚙️ <b>Gold Edge Paper Status</b>\n\n"
                 f"• Strategy: <code>{config.STRATEGY_VERSION}</code>\n"
                 f"• Mode: <b>{'PAPER ($100)' if config.PAPER_TRADING else 'LIVE'}</b>\n"
                 f"• New entries: <b>{'🟢 ON' if paper_trader.new_entries_enabled else '🟡 PAUSED'}</b>\n"
@@ -283,8 +303,9 @@ class TelegramUI:
                 f"• SMA{config.ZSCORE_PERIOD}: <b>${float(lt.get('sma_z', 0)):.2f}</b>\n"
                 f"• Open: <b>{len(open_trades)}</b> · Today: "
                 f"<b>{db.count_trades_opened_today()}/{config.MAX_TRADES_PER_DAY}</b>\n"
-                f"• Risk: <b>{config.RISK_PER_TRADE_PCT}%</b> · "
-                f"TP <b>{config.TP_RR_RATIO:.1f}R</b> · SL {config.SL_ATR_MULTIPLIER}×ATR\n"
+                f"• Last decision: <code>{gate_text}</code>\n"
+                f"• Risk cap: <b>{effective_risk:.2f}%</b> · fee model: "
+                f"<b>{config.PAPER_EXECUTION_MODE}</b>\n"
                 f"• Equity: <b>${snapshot['equity']:.2f}</b> (open PnL ${snapshot['unrealized_pnl_usd']:+.2f})\n"
                 f"• DB: <code>{db.db_path}</code> ({size_kb:.1f} KB)"
             )
@@ -296,6 +317,11 @@ class TelegramUI:
             pnl = account["balance"] - initial
             ret = (pnl / initial) * 100.0 if initial else 0.0
             day_pnl = db.get_daily_realized_pnl()
+            effective_risk = (
+                min(config.RISK_PER_TRADE_PCT, config.V7_RISK_CAP_PCT)
+                if config.ENABLE_ADAPTIVE_SCALPER
+                else config.RISK_PER_TRADE_PCT
+            )
             msg = (
                 "💰 <b>Paper Trading Account</b>\n\n"
                 f"• Initial: <b>${initial:.2f} USDT</b>\n"
@@ -306,8 +332,8 @@ class TelegramUI:
                 f"<b>${account['free_margin_usd']:.2f}</b>\n"
                 f"• Realized total: <b>${pnl:+.2f} ({ret:+.2f}%)</b>\n"
                 f"• Today realized: <b>${day_pnl:+.2f}</b>\n"
-                f"• Risk / trade: <b>{config.RISK_PER_TRADE_PCT}% "
-                f"(~${account['equity'] * config.RISK_PER_TRADE_PCT / 100:.2f})</b>"
+                f"• Risk cap / trade: <b>{effective_risk:.2f}% "
+                f"(~${account['equity'] * effective_risk / 100:.2f}, including estimated costs)</b>"
             )
             await self.send_message(msg, chat_id=chat_id)
 
@@ -324,10 +350,13 @@ class TelegramUI:
                 dt = ts.split("T")[1][:8] if "T" in ts else ts[:19]
                 z = s.get("zscore")
                 z_text = f" | Z {float(z):+.2f}" if z is not None else ""
+                setup = s.get("setup_name") or "LEGACY"
+                score = s.get("signal_score")
+                score_text = f" S{int(score)}" if score is not None else ""
                 lines.append(
-                    f"• [{dt}] <b>{s['direction']}</b> @ ${float(s['entry_price']):.2f} "
-                    f"| SL ${float(s['sl_price']):.2f} | TP ${float(s['tp2_price']):.2f}"
-                    f"{z_text} | <b>{s['status']}</b>"
+                    f"• [{dt}] <b>{s['direction']}</b> <code>{setup}{score_text}</code> "
+                    f"@ ${float(s['entry_price']):.2f} | SL ${float(s['sl_price']):.2f} "
+                    f"| TP ${float(s['tp2_price']):.2f}{z_text} | <b>{s['status']}</b>"
                 )
             await self.send_message("\n".join(lines), chat_id=chat_id)
 
@@ -353,9 +382,10 @@ class TelegramUI:
                 for t in closed_t:
                     pnl = float(t.get("pnl_usd") or 0.0)
                     emoji = "✅" if pnl >= 0 else "❌"
+                    setup = t.get("setup_name") or "LEGACY"
                     lines.append(
-                        f"• {emoji} #{t['id']} <b>{t['direction']}</b> [{t['exit_reason']}] "
-                        f"| Exit ${float(t['exit_price'] or 0):.2f} "
+                        f"• {emoji} #{t['id']} <b>{t['direction']}</b> <code>{setup}</code> "
+                        f"[{t['exit_reason']}] | Exit ${float(t['exit_price'] or 0):.2f} "
                         f"| PnL <b>${pnl:+.2f} ({float(t.get('pnl_pct') or 0):+.2f}%)</b>"
                     )
             else:
@@ -368,6 +398,15 @@ class TelegramUI:
             bd = (
                 ", ".join(f"{k}:{v}" for k, v in breakdown.items())
                 if breakdown
+                else "n/a"
+            )
+            setup_breakdown = st.get("setup_breakdown") or {}
+            setup_text = (
+                " | ".join(
+                    f"{name}: {values['trades']}t/{values['wins']}w/${values['pnl_usd']:+.2f}"
+                    for name, values in setup_breakdown.items()
+                )
+                if setup_breakdown
                 else "n/a"
             )
             msg = (
@@ -384,6 +423,7 @@ class TelegramUI:
                 f"• Equity: <b>${st['current_balance']:.2f}</b> / "
                 f"${st['initial_balance']:.2f} USDT\n"
                 f"• Exits: <code>{bd}</code>\n"
+                f"• Setups (trades/wins/PnL): <code>{setup_text}</code>\n"
                 f"• DB: <code>{st['db_path']}</code>"
             )
             await self.send_message(msg, chat_id=chat_id)
@@ -419,6 +459,7 @@ class TelegramUI:
             base = market_feed.last_tick or {}
             dummy = {
                 "timestamp": datetime.now(timezone.utc),
+                "bar_timestamp_ms": base.get("bar_timestamp_ms"),
                 "source": "TELEGRAM_FORCE",
                 "close": px,
                 "open": px - 0.5 if direction == "LONG" else px + 0.5,
@@ -453,7 +494,7 @@ class TelegramUI:
             }
             paper_trader.process_new_market_data(dummy)
             await self.send_message(
-                f"🧪 Forced <b>{direction}</b> paper test (v5) at last closed ${px:.2f}.",
+                f"🧪 Forced <b>{direction}</b> paper plumbing test ({config.STRATEGY_VERSION}) at ${px:.2f}.",
                 chat_id=chat_id,
             )
 

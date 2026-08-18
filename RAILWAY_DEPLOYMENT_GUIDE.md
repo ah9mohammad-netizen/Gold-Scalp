@@ -28,6 +28,7 @@ Copy the values below into **Railway → Service → Variables**. Never commit a
 ENV=production
 PAPER_TRADING=true
 PAPER_BALANCE=100.00
+STRATEGY_VERSION=v7-adaptive-session-scalper
 
 SYMBOL=XAU-USDT
 EXCHANGE_ID=bybit
@@ -38,25 +39,35 @@ MAX_DATA_STALENESS_SECONDS=900
 ALLOW_PROXY_FEEDS=false
 
 MAX_LEVERAGE=50
-RISK_PER_TRADE_PCT=1.0
+RISK_PER_TRADE_PCT=0.50
+V7_RISK_CAP_PCT=0.50
 MAX_SPREAD_USD=0.40
 MAX_OPEN_TRADES=1
-MAX_DAILY_LOSS_PCT=4.0
-MAX_TRADES_PER_DAY=3
+MAX_DAILY_LOSS_PCT=2.0
+MAX_TRADES_PER_DAY=4
 ENTRY_COOLDOWN_SECONDS=600
 LOSS_COOLDOWN_SECONDS=1200
-MARGIN_CAP_PCT=35.0
+MARGIN_CAP_PCT=25.0
 
-ALLOWED_SESSIONS=7-17
-ZSCORE_PERIOD=20
-ZSCORE_ENTRY=2.2
-ADX_RANGE_MAX=18
-REQUIRE_TURN_CONFIRM=true
-SL_ATR_MULTIPLIER=2.5
-TP_RR_RATIO=2.0
+V7_ALLOWED_SESSIONS=6-20
+V7_MIN_SIGNAL_SCORE=4
+V7_RANGE_Z_ENTRY=1.60
+V7_RANGE_ADX_MAX=23
+V7_TREND_ADX_MIN=18
+V7_ATR_SHOCK_MULTIPLE=2.20
+V7_RANGE_TP_RR=1.35
+V7_TREND_TP_RR=1.60
+V7_LIQUIDITY_TP_RR=1.50
+V7_BE_TRIGGER_RR=1.00
+V7_RANGE_MAX_HOLDING_BARS=8
+V7_TREND_MAX_HOLDING_BARS=12
+V7_MIN_STOP_COST_MULTIPLE=1.25
+V7_MIN_TARGET_COST_MULTIPLE=1.50
 
-# Conservative paper execution assumptions; tune only from real fill evidence.
+# Conservative baseline. MAKER_POST_ONLY requires a separately reviewed fill model.
+PAPER_EXECUTION_MODE=TAKER
 PAPER_TAKER_FEE_RATE=0.0004
+PAPER_MAKER_FEE_RATE=0.0001
 PAPER_SLIPPAGE_USD=0.03
 
 DB_PATH=/data/history.db
@@ -70,6 +81,8 @@ TELEGRAM_CHAT_ID=replace_me
 - `ALLOW_PROXY_FEEDS=false` means the bot will remain flat rather than silently use PAXG as XAU-USDT. Turn it on only for an explicitly labelled proxy experiment.
 - `ONLY_CLOSED_CANDLES=true` avoids acting on an updating 5-minute candle. The service polls frequently, but a candle is consumed once.
 - `MAX_LEVERAGE` is only a margin constraint; position size is based on the stop/risk budget. It is **not** a profit target.
+- v7 sizes from **stop distance plus estimated round-trip costs** and caps effective risk at 0.50% while it is unvalidated.
+- `PAPER_EXECUTION_MODE=TAKER` is intentional. Selecting a strategy version does not prove a post-only maker order would fill.
 - Never tune paper fees/slippage to zero. The ledger stores gross PnL, simulated fees, and net PnL separately.
 
 ## 3. Telegram setup
@@ -98,8 +111,8 @@ mode=PAPER | balance=$100.00
 
 Then use Telegram:
 
-1. `/status` — confirm direct feed source, last **closed** bar, and database path.
-2. `/balance` — confirm 100-USDT realized balance and zero open margin.
+1. `/status` — confirm strategy `v7-adaptive-session-scalper`, fee model `TAKER`, direct feed source, last **closed** bar, and database path.
+2. `/balance` — confirm 100-USDT realized balance, 0.50% risk cap, and zero open margin.
 3. `/get_db` — confirm a `history.db` document arrives.
 4. `/pause`, restart the service, then `/status` — confirm the pause persisted.
 5. `/resume` only after the above checks pass.

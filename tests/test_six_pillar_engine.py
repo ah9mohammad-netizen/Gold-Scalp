@@ -143,6 +143,13 @@ class SixPillarEngineTests(unittest.TestCase):
         plan3 = self.engine.evaluate(bar, 100.0)
         self.assertIsNone(plan3)
 
+        # The cap is per UTC date, not permanent for the lifetime of Railway.
+        next_day = dict(bar)
+        next_day["timestamp"] = bar["timestamp"].replace(day=30)
+        next_day["bar_timestamp_ms"] = int(next_day["timestamp"].timestamp() * 1000)
+        plan_next_day = self.engine.evaluate(next_day, 100.0)
+        self.assertIsNotNone(plan_next_day)
+
     def test_paper_trader_integration_uses_six_pillar_engine_when_enabled(self) -> None:
         import os
         import tempfile

@@ -82,7 +82,11 @@ class AppConfig:
     ENV: str = os.getenv("ENV", "production")
     RAILWAY_ENVIRONMENT: str = os.getenv("RAILWAY_ENVIRONMENT", "")
     STRATEGY_VERSION: str = os.getenv("STRATEGY_VERSION", "v5-zscore-mr")
-    ENABLE_SIX_PILLAR_SCALPER: bool = _env_bool("ENABLE_SIX_PILLAR_SCALPER", "false") or STRATEGY_VERSION.lower().startswith("v6")
+    ENABLE_ADAPTIVE_SCALPER: bool = STRATEGY_VERSION.lower().startswith("v7")
+    ENABLE_SIX_PILLAR_SCALPER: bool = (
+        _env_bool("ENABLE_SIX_PILLAR_SCALPER", "false")
+        or STRATEGY_VERSION.lower().startswith("v6")
+    )
 
     INITIAL_BALANCE_USDT: float = float(os.getenv("PAPER_BALANCE", "100.00"))
     SYMBOL: str = os.getenv("SYMBOL", "XAU-USDT")
@@ -103,6 +107,12 @@ class AppConfig:
     # Sessions
     ALLOWED_SESSIONS: List[Tuple[int, int]] = field(
         default_factory=lambda: _env_sessions(os.getenv("ALLOWED_SESSIONS"))
+    )
+    # v7 uses one continuous liquid-session research window.  It deliberately
+    # has its own variable so old v5/v6 Railway settings cannot silently make
+    # the rewritten strategy sparse again.
+    V7_ALLOWED_SESSIONS: List[Tuple[int, int]] = field(
+        default_factory=lambda: _env_sessions(os.getenv("V7_ALLOWED_SESSIONS", "6-20"))
     )
     # Kept for market_data / optional secondary setups
     ASIAN_START_HOUR_UTC: int = int(os.getenv("ASIAN_START_HOUR_UTC", "0"))
@@ -148,6 +158,10 @@ class AppConfig:
     ROUND_TRIP_COST_USD: float = float(os.getenv("ROUND_TRIP_COST_USD", "0.40"))
     PAPER_TAKER_FEE_RATE: float = float(os.getenv("PAPER_TAKER_FEE_RATE", "0.0004"))
     PAPER_MAKER_FEE_RATE: float = float(os.getenv("PAPER_MAKER_FEE_RATE", "0.0001"))
+    # A close-of-candle market fill is a taker assumption.  Maker fees are used
+    # only when explicitly requested; selecting v6/v7 no longer makes fills
+    # magically qualify as post-only maker executions.
+    PAPER_EXECUTION_MODE: str = os.getenv("PAPER_EXECUTION_MODE", "TAKER").strip().upper()
     PAPER_SLIPPAGE_USD: float = float(os.getenv("PAPER_SLIPPAGE_USD", "0.03"))
     MIN_SL_COST_MULTIPLE: float = float(os.getenv("MIN_SL_COST_MULTIPLE", "5.0"))
     MIN_TP_COST_MULTIPLE: float = float(os.getenv("MIN_TP_COST_MULTIPLE", "8.0"))
@@ -166,6 +180,25 @@ class AppConfig:
     ENABLE_TRAIL: bool = _env_bool("ENABLE_TRAIL", "false")
     TP1_RR_RATIO: float = float(os.getenv("TP1_RR_RATIO", "9.0"))
     TP2_RR_RATIO: float = float(os.getenv("TP2_RR_RATIO", "2.0"))
+
+    # v7 adaptive-session forward-paper experiment.  Frequency comes from
+    # routing several independently tagged setups, not from removing execution
+    # or risk gates.  Risk is capped below the user-wide risk setting while the
+    # new family is unvalidated.
+    V7_RISK_CAP_PCT: float = float(os.getenv("V7_RISK_CAP_PCT", "0.50"))
+    V7_MIN_SIGNAL_SCORE: int = int(os.getenv("V7_MIN_SIGNAL_SCORE", "4"))
+    V7_RANGE_Z_ENTRY: float = float(os.getenv("V7_RANGE_Z_ENTRY", "1.60"))
+    V7_RANGE_ADX_MAX: float = float(os.getenv("V7_RANGE_ADX_MAX", "23.0"))
+    V7_TREND_ADX_MIN: float = float(os.getenv("V7_TREND_ADX_MIN", "18.0"))
+    V7_ATR_SHOCK_MULTIPLE: float = float(os.getenv("V7_ATR_SHOCK_MULTIPLE", "2.20"))
+    V7_RANGE_TP_RR: float = float(os.getenv("V7_RANGE_TP_RR", "1.35"))
+    V7_TREND_TP_RR: float = float(os.getenv("V7_TREND_TP_RR", "1.60"))
+    V7_LIQUIDITY_TP_RR: float = float(os.getenv("V7_LIQUIDITY_TP_RR", "1.50"))
+    V7_BE_TRIGGER_RR: float = float(os.getenv("V7_BE_TRIGGER_RR", "1.00"))
+    V7_RANGE_MAX_HOLDING_BARS: int = int(os.getenv("V7_RANGE_MAX_HOLDING_BARS", "8"))
+    V7_TREND_MAX_HOLDING_BARS: int = int(os.getenv("V7_TREND_MAX_HOLDING_BARS", "12"))
+    V7_MIN_STOP_COST_MULTIPLE: float = float(os.getenv("V7_MIN_STOP_COST_MULTIPLE", "1.25"))
+    V7_MIN_TARGET_COST_MULTIPLE: float = float(os.getenv("V7_MIN_TARGET_COST_MULTIPLE", "1.50"))
 
     DB_PATH: str = field(default_factory=_resolve_db_path)
     DATABASE_URL: str = field(default="")
@@ -200,8 +233,21 @@ class AppConfig:
             raise ValueError("MAX_LEVERAGE must be in [1, 75]")
         if not 0 < self.MARGIN_CAP_PCT <= 100:
             raise ValueError("MARGIN_CAP_PCT must be in (0, 100]")
-        if self.PAPER_TAKER_FEE_RATE < 0 or self.PAPER_SLIPPAGE_USD < 0:
+        if self.PAPER_TAKER_FEE_RATE < 0 or self.PAPER_MAKER_FEE_RATE < 0 or self.PAPER_SLIPPAGE_USD < 0:
             raise ValueError("Paper fees and slippage cannot be negative")
+        if self.PAPER_EXECUTION_MODE not in ("TAKER", "MAKER_POST_ONLY"):
+            raise ValueError("PAPER_EXECUTION_MODE must be TAKER or MAKER_POST_ONLY")
+        if not 0 < self.V7_RISK_CAP_PCT <= 1.0:
+            raise ValueError("V7_RISK_CAP_PCT must be in (0, 1]")
+        if self.V7_MIN_SIGNAL_SCORE < 3:
+            raise ValueError("V7_MIN_SIGNAL_SCORE must be at least 3")
+
+    @property
+    def paper_fee_rate(self) -> float:
+        """Fee rate used by the explicitly selected paper execution model."""
+        if self.PAPER_EXECUTION_MODE == "MAKER_POST_ONLY":
+            return self.PAPER_MAKER_FEE_RATE
+        return self.PAPER_TAKER_FEE_RATE
 
 
 config = AppConfig()

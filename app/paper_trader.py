@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, Set
 
@@ -29,6 +30,9 @@ class PaperTradingEngine:
         self.db = database or db
         if decision_engine is not None:
             self.decision_engine = decision_engine
+        elif config.ENABLE_ADAPTIVE_SCALPER:
+            from app.adaptive_scalper_engine import adaptive_scalper_engine
+            self.decision_engine = adaptive_scalper_engine
         elif config.ENABLE_SIX_PILLAR_SCALPER:
             from app.six_pillar_engine import six_pillar_engine
             self.decision_engine = six_pillar_engine
@@ -92,7 +96,8 @@ class PaperTradingEngine:
         self._entries_blocked_until = datetime.now(timezone.utc) + timedelta(seconds=duration)
 
     def _daily_loss_breached(self, balance: float) -> bool:
-        max_loss = self.db.get_initial_balance() * (config.MAX_DAILY_LOSS_PCT / 100.0)
+        loss_pct = min(config.MAX_DAILY_LOSS_PCT, 2.0) if config.ENABLE_ADAPTIVE_SCALPER else config.MAX_DAILY_LOSS_PCT
+        max_loss = self.db.get_initial_balance() * (loss_pct / 100.0)
         day_pnl = self.db.get_daily_realized_pnl()
         return day_pnl <= -max_loss or (balance <= 0 and day_pnl < 0)
 
@@ -126,8 +131,14 @@ class PaperTradingEngine:
             return round(max(sl, executable_high) + slip, 4)
         return round(tp + slip, 4)
 
-    def _get_fee_rate(self) -> float:
-        return config.PAPER_MAKER_FEE_RATE if config.ENABLE_SIX_PILLAR_SCALPER else config.PAPER_TAKER_FEE_RATE
+    @staticmethod
+    def _get_fee_rate(record: Optional[Dict[str, Any]] = None) -> float:
+        """Keep a trade on the fee model used when it was opened."""
+        if record:
+            stored = float(record.get("fee_rate") or 0.0)
+            if stored > 0:
+                return stored
+        return config.paper_fee_rate
 
     def _settle_trade(
         self,
@@ -140,7 +151,7 @@ class PaperTradingEngine:
         direction = str(trade["direction"])
         leverage = int(trade["leverage"] or config.MAX_LEVERAGE)
         entry_fee = float(trade.get("entry_fee_usd") or 0.0)
-        exit_fee = exit_price * size * self._get_fee_rate()
+        exit_fee = exit_price * size * self._get_fee_rate(trade)
         gross = (exit_price - entry) * size if direction == "LONG" else (entry - exit_price) * size
         net = gross - entry_fee - exit_fee
         pnl_pct = self._pnl_pct(net, entry, size, leverage)
@@ -171,21 +182,78 @@ class PaperTradingEngine:
         )
         return True
 
-    def evaluate_open_trades(
-        self, current_price: float, current_high: float, current_low: float, atr: float, spread: float
-    ) -> None:
-        """Evaluate positions once per *subsequent* closed candle.
+    @staticmethod
+    def _market_exit_fill(direction: str, mid_price: float, spread: float) -> float:
+        """Executable close for indicator/time/manual-style market exits."""
+        half_spread = max(0.0, spread) / 2.0
+        slip = config.PAPER_SLIPPAGE_USD
+        if direction == "LONG":
+            return round(mid_price - half_spread - slip, 4)
+        return round(mid_price + half_spread + slip, 4)
 
-        If both SL and TP occur in the available OHLC range, SL wins.  Without
-        tick ordering, that is the conservative, non-look-ahead assumption.
+    def _estimated_net_at_exit(self, trade: Dict[str, Any], exit_price: float) -> float:
+        entry = float(trade["entry_price"])
+        size = float(trade["size_oz"])
+        direction = str(trade["direction"])
+        gross = (exit_price - entry) * size if direction == "LONG" else (entry - exit_price) * size
+        entry_fee = float(trade.get("entry_fee_usd") or 0.0)
+        exit_fee = exit_price * size * self._get_fee_rate(trade)
+        return gross - entry_fee - exit_fee
+
+    @staticmethod
+    def _bars_held(trade: Dict[str, Any], current_bar: Dict[str, Any]) -> int:
+        try:
+            opened_bar = int(trade.get("candle_timestamp_ms") or 0)
+            current_bar_ms = int(current_bar.get("bar_timestamp_ms") or 0)
+        except (TypeError, ValueError):
+            opened_bar = current_bar_ms = 0
+        raw = config.TIMEFRAME.strip().lower()
+        period_seconds = int(raw[:-1]) * (60 if raw.endswith("m") else 3600) if raw[:-1].isdigit() else 300
+        period_ms = max(60_000, period_seconds * 1000)
+        if opened_bar > 0 and current_bar_ms >= opened_bar:
+            return max(0, int((current_bar_ms - opened_bar) // period_ms))
+        return 0
+
+    def _cost_lock_stop(self, trade: Dict[str, Any]) -> float:
+        """Replace nominal breakeven with a stop intended to cover both fees."""
+        entry = float(trade["entry_price"])
+        size = float(trade["size_oz"])
+        direction = str(trade["direction"])
+        entry_fee_per_oz = float(trade.get("entry_fee_usd") or 0.0) / max(size, 1e-9)
+        exit_fee_per_oz = entry * self._get_fee_rate(trade)
+        # _exit_fill applies another adverse slippage increment after the stop
+        # is touched, so the trigger price must include it.
+        lock_distance = entry_fee_per_oz + exit_fee_per_oz + config.PAPER_SLIPPAGE_USD + 0.01
+        return round(entry + lock_distance if direction == "LONG" else entry - lock_distance, 4)
+
+    def evaluate_open_trades(self, market_data: Dict[str, Any]) -> None:
+        """Evaluate positions once per subsequent completed candle.
+
+        Stop has priority over target when both occur in one OHLC candle.  All
+        adaptive exits receive the actual indicator snapshot and an executable,
+        fee-aware net-PnL estimate; the old synthetic ``zscore=0`` shortcut is
+        intentionally removed.
         """
+        current_price = float(market_data["close"])
+        current_high = float(market_data.get("high", current_price))
+        current_low = float(market_data.get("low", current_price))
+        atr = float(market_data.get("atr_14", self.last_atr))
+        spread = max(0.0, float(market_data.get("spread", self.last_spread)))
+
         for trade in self.db.get_open_trades():
             trade_id = int(trade["id"])
             direction = str(trade["direction"])
             entry = float(trade["entry_price"])
             sl = float(trade["sl_price"])
+            initial_sl = float(trade.get("initial_sl_price") or sl)
             be_level = float(trade["tp1_price"])
             tp = float(trade["tp2_price"])
+            armed = trade_id in self._be_armed or (
+                (direction == "LONG" and sl > initial_sl + 1e-6)
+                or (direction == "SHORT" and sl < initial_sl - 1e-6)
+            )
+            if armed:
+                self._be_armed.add(trade_id)
             executable_high, executable_low = self._quote_range(
                 direction, current_high, current_low, spread
             )
@@ -193,34 +261,36 @@ class PaperTradingEngine:
             exit_reason: Optional[str] = None
             if direction == "LONG":
                 if executable_low <= sl:
-                    exit_reason = "BE_STOP" if trade_id in self._be_armed and sl >= entry else "SL_HIT"
+                    exit_reason = "BE_STOP" if armed and sl >= entry else "SL_HIT"
                 elif executable_high >= tp:
                     exit_reason = "TP_HIT"
-                elif trade_id not in self._be_armed and executable_high >= be_level:
-                    self.db.update_trade_sl(trade_id, entry)
+                elif not armed and executable_high >= be_level:
+                    locked_sl = self._cost_lock_stop(trade)
+                    self.db.update_trade_sl(trade_id, locked_sl)
                     self._be_armed.add(trade_id)
                     self.emit_alert(
-                        f"🔒 <b>BE ARMED #{trade_id}</b> LONG @ ${entry:.2f}\n"
-                        f"SL → ${entry:.2f} | TP ${tp:.2f}"
+                        f"🔒 <b>COST LOCK #{trade_id}</b> LONG @ ${entry:.2f}\n"
+                        f"SL → ${locked_sl:.2f} | TP ${tp:.2f}"
                     )
-                elif config.ENABLE_TRAIL and trade_id in self._be_armed:
-                    trail = max(entry, current_price - max(atr * config.TRAIL_ATR_MULTIPLIER, 0.01))
+                elif config.ENABLE_TRAIL and armed:
+                    trail = max(sl, current_price - max(atr * config.TRAIL_ATR_MULTIPLIER, 0.01))
                     if trail > sl:
                         self.db.update_trade_sl(trade_id, round(trail, 4))
             else:
                 if executable_high >= sl:
-                    exit_reason = "BE_STOP" if trade_id in self._be_armed and sl <= entry else "SL_HIT"
+                    exit_reason = "BE_STOP" if armed and sl <= entry else "SL_HIT"
                 elif executable_low <= tp:
                     exit_reason = "TP_HIT"
-                elif trade_id not in self._be_armed and executable_low <= be_level:
-                    self.db.update_trade_sl(trade_id, entry)
+                elif not armed and executable_low <= be_level:
+                    locked_sl = self._cost_lock_stop(trade)
+                    self.db.update_trade_sl(trade_id, locked_sl)
                     self._be_armed.add(trade_id)
                     self.emit_alert(
-                        f"🔒 <b>BE ARMED #{trade_id}</b> SHORT @ ${entry:.2f}\n"
-                        f"SL → ${entry:.2f} | TP ${tp:.2f}"
+                        f"🔒 <b>COST LOCK #{trade_id}</b> SHORT @ ${entry:.2f}\n"
+                        f"SL → ${locked_sl:.2f} | TP ${tp:.2f}"
                     )
-                elif config.ENABLE_TRAIL and trade_id in self._be_armed:
-                    trail = min(entry, current_price + max(atr * config.TRAIL_ATR_MULTIPLIER, 0.01))
+                elif config.ENABLE_TRAIL and armed:
+                    trail = min(sl, current_price + max(atr * config.TRAIL_ATR_MULTIPLIER, 0.01))
                     if trail < sl:
                         self.db.update_trade_sl(trade_id, round(trail, 4))
 
@@ -229,21 +299,28 @@ class PaperTradingEngine:
                     direction, exit_reason, sl, tp, executable_high, executable_low
                 )
                 self._settle_trade(trade, exit_price, exit_reason)
-            elif hasattr(self.decision_engine, "check_pillar5_exits"):
-                p5_reason = self.decision_engine.check_pillar5_exits(
-                    trade,
-                    {
-                        "close": current_price,
-                        "sma_z": current_price,
-                        "stdev_z": 1.0,
-                        "zscore": 0.0,
-                    },
-                )
-                if p5_reason:
-                    self._settle_trade(trade, current_price, p5_reason)
+                continue
 
-    def _finalize_paper_fill(self, plan: Dict[str, Any], market_data: Dict[str, Any], balance: float) -> Optional[Dict[str, Any]]:
-        """Apply a taker fill to a reference-close setup before it is persisted."""
+            market_exit = self._market_exit_fill(direction, current_price, spread)
+            exit_bar = dict(market_data)
+            exit_bar["estimated_net_pnl_usd"] = self._estimated_net_at_exit(trade, market_exit)
+            bars_held = self._bars_held(trade, market_data)
+            adaptive_reason: Optional[str] = None
+            if hasattr(self.decision_engine, "check_adaptive_exit"):
+                adaptive_reason = self.decision_engine.check_adaptive_exit(
+                    trade, exit_bar, bars_held
+                )
+            elif hasattr(self.decision_engine, "check_pillar5_exits"):
+                adaptive_reason = self.decision_engine.check_pillar5_exits(
+                    trade, exit_bar, bars_held=bars_held
+                )
+            if adaptive_reason:
+                self._settle_trade(trade, market_exit, adaptive_reason)
+
+    def _finalize_paper_fill(
+        self, plan: Dict[str, Any], market_data: Dict[str, Any], balance: float
+    ) -> Optional[Dict[str, Any]]:
+        """Apply the configured adverse paper fill and re-check cost/risk caps."""
         final = dict(plan)
         direction = str(final["direction"])
         reference = float(final.get("reference_price", final["entry_price"]))
@@ -253,38 +330,65 @@ class PaperTradingEngine:
         fill = reference + half_spread + slippage if direction == "LONG" else reference - half_spread - slippage
         if fill <= 0:
             return None
+
         sl_distance = float(final["sl_distance"])
-        tp_distance = sl_distance * config.TP_RR_RATIO
-        be_distance = sl_distance * config.BE_TRIGGER_RR
+        tp_rr = float(final.get("tp_rr", config.TP_RR_RATIO))
+        be_rr = float(final.get("be_trigger_rr", config.BE_TRIGGER_RR))
+        tp_distance = sl_distance * tp_rr
+        be_distance = sl_distance * be_rr
         if direction == "LONG":
             sl, tp1, tp2 = fill - sl_distance, fill + be_distance, fill + tp_distance
         else:
             sl, tp1, tp2 = fill + sl_distance, fill - be_distance, fill - tp_distance
+
+        fee_rate = self._get_fee_rate(final)
+        final["fee_rate"] = fee_rate
+        leverage = int(final.get("leverage") or config.MAX_LEVERAGE)
         size = float(final["size_oz"])
-        margin = fill * size / max(config.MAX_LEVERAGE, 1)
-        entry_fee = fill * size * self._get_fee_rate()
-        # The margin cap must hold after the adverse entry fill, too.
-        cap = balance * (config.MARGIN_CAP_PCT / 100.0)
-        if margin > cap:
-            size = round(cap * config.MAX_LEVERAGE / fill, 4)
+        rt_cost_oz = fill * fee_rate * 2.0 + spread + slippage * 2.0
+
+        # v7 provides a full stop-out budget.  Re-size after the adverse fill so
+        # rounding or a changed quote cannot push price risk + costs over it.
+        risk_budget = float(final.get("risk_budget_usd") or 0.0)
+        if risk_budget > 0:
+            max_risk_size = math.floor((risk_budget / (sl_distance + rt_cost_oz)) * 10_000) / 10_000
+            size = min(size, max_risk_size)
             if size < 0.01:
                 return None
-            margin = fill * size / max(config.MAX_LEVERAGE, 1)
-            entry_fee = fill * size * self._get_fee_rate()
+
+        margin = fill * size / max(leverage, 1)
+        entry_fee = fill * size * fee_rate
+        margin_cap_pct = min(
+            config.MARGIN_CAP_PCT, float(final.get("margin_cap_pct") or config.MARGIN_CAP_PCT)
+        )
+        cap = balance * (margin_cap_pct / 100.0)
+        if margin > cap:
+            size = math.floor(((cap * leverage / fill) * 10_000)) / 10_000
+            if size < 0.01:
+                return None
+            margin = fill * size / max(leverage, 1)
+            entry_fee = fill * size * fee_rate
         if margin + entry_fee > balance:
             return None
+
+        expected_cost = rt_cost_oz * size
         final.update(
             {
                 "reference_price": round(reference, 4),
                 "entry_price": round(fill, 4),
                 "sl_price": round(sl, 4),
+                "initial_sl_price": round(sl, 4),
                 "tp1_price": round(tp1, 4),
                 "tp2_price": round(tp2, 4),
                 "size_oz": size,
+                "leverage": leverage,
                 "required_margin_usd": round(margin, 4),
                 "entry_fee_usd": round(entry_fee, 6),
-                "dollar_risk": round(size * sl_distance + entry_fee, 4),
+                "dollar_risk": round(size * (sl_distance + rt_cost_oz), 4),
                 "spread": round(spread, 4),
+                "estimated_round_trip_cost_per_oz": round(rt_cost_oz, 6),
+                "expected_cost_usd": round(expected_cost, 6),
+                "expected_net_reward_usd": round(max(0.0, size * (tp_distance - rt_cost_oz)), 6),
             }
         )
         return final
@@ -329,14 +433,15 @@ class PaperTradingEngine:
         self.db.update_signal_status(signal_id, "EXECUTED")
 
         self.emit_alert(
-            f"🚀 <b>NEW PAPER TRADE #{trade_id}</b> · <code>{config.STRATEGY_VERSION}</code>\n"
-            f"Setup: <b>{plan.get('setup_name', 'SETUP')}</b> | <b>{direction}</b> {plan['symbol']}\n"
+            f"🚀 <b>NEW PAPER TRADE #{trade_id}</b> · <code>{plan.get('strategy_version', config.STRATEGY_VERSION)}</code>\n"
+            f"Setup: <b>{plan.get('setup_name', 'SETUP')}</b> | <b>{direction}</b> {plan['symbol']}"
+            f" | Score <b>{int(plan.get('signal_score') or 0)}</b>\n"
             f"Signal / fill: <b>${plan['reference_price']:.2f} → ${plan['entry_price']:.2f}</b>\n"
             f"Z: <b>{float(plan.get('zscore', 0)):+.2f}</b> | SL <b>${plan['sl_price']:.2f}</b> | "
             f"TP <b>${plan['tp2_price']:.2f}</b>\n"
             f"Size <b>{plan['size_oz']:.4f} oz</b> | Margin <b>${plan['required_margin_usd']:.2f}</b> "
-            f"| Est. entry fee <b>${plan['entry_fee_usd']:.3f}</b>\n"
-            f"Risk incl. entry fee: <b>${plan['dollar_risk']:.2f}</b>"
+            f"| Est. RT cost <b>${float(plan.get('expected_cost_usd') or 0):.3f}</b>\n"
+            f"Full stop risk incl. costs: <b>${plan['dollar_risk']:.2f}</b>"
         )
 
     def process_new_market_data(self, market_data: Dict[str, Any]) -> bool:
@@ -361,7 +466,7 @@ class PaperTradingEngine:
             return False
 
         # Manage first: a new decision cannot benefit from the bar that created it.
-        self.evaluate_open_trades(price, high, low, atr, spread)
+        self.evaluate_open_trades(market_data)
         self.try_open_new_trade(market_data)
 
         if not force and bar_timestamp:
