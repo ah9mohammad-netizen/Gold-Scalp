@@ -137,8 +137,11 @@ If no direct XAU feed is available, the bot logs the failure and opens no synthe
 
 | Table | Purpose |
 |---|---|
-| `signals` | closed-bar source/time, setup version, indicators, reference/fill price, SL/TP, risk and layer notes |
-| `trades` | filled entry/exit, margin, gross PnL, entry/exit fees, **net** PnL and exit reason |
+| `market_bars` | every consumed closed M5 OHLCV/quote, indicator and structural-level snapshot |
+| `decision_audit` | accepted, rejected and account-blocked result for every consumed bar, including reason and JSON context |
+| `trade_marks` | every subsequent closed-bar mark while a trade is open, with estimated net PnL and indicator state |
+| `signals` | accepted setup version, score, regime, indicators, reference/fill price, SL/TP, expected costs and risk |
+| `trades` | setup metadata, filled entry/exit, MFE/MAE/R-multiples, holding bars, fees, gross and **net** PnL |
 | `account_history` | initial 100-USDT deposit and every realized balance change |
 | `bot_state` | persistent pause flag and last processed candle for restart idempotency |
 

@@ -421,6 +421,15 @@ class AdaptiveSessionScalper:
             ]
 
         eligible = [c for c in candidates if c.score >= self.config.MIN_SIGNAL_SCORE or force]
+        candidate_snapshot = [
+            {
+                "setup_name": candidate.setup_name,
+                "direction": candidate.direction,
+                "score": candidate.score,
+                "reason": candidate.reason,
+            }
+            for candidate in candidates
+        ]
         if not eligible:
             best = max((c.score for c in candidates), default=0)
             self._reject(
@@ -428,6 +437,7 @@ class AdaptiveSessionScalper:
                 regime=regime,
                 best_score=best,
                 required_score=self.config.MIN_SIGNAL_SCORE,
+                candidates=candidate_snapshot,
             )
             return None
 
@@ -435,7 +445,12 @@ class AdaptiveSessionScalper:
         best = eligible[0]
         tied_directions = {c.direction for c in eligible if c.score == best.score}
         if len(tied_directions) > 1 and not force:
-            self._reject("AMBIGUOUS_OPPOSING_SETUPS", score=best.score, regime=regime)
+            self._reject(
+                "AMBIGUOUS_OPPOSING_SETUPS",
+                score=best.score,
+                regime=regime,
+                candidates=candidate_snapshot,
+            )
             return None
 
         # Full round-trip cost per ounce from the actual paper execution model:
@@ -524,6 +539,7 @@ class AdaptiveSessionScalper:
             "expected_net_reward_usd": round(estimated_net_reward, 6),
             "zscore": round(zscore, 4),
             "adx": round(adx, 4),
+            "rsi_at_entry": round(rsi, 4),
             "layer1_regime": f"[{session}] {regime_reason}",
             "layer2_structure": f"[{best.setup_name}] score={best.score}: {best.reason}",
             "layer3_momentum": (
@@ -541,9 +557,12 @@ class AdaptiveSessionScalper:
         self.last_evaluation = {
             "status": "ACCEPTED",
             "reason": best.setup_name,
+            "setup_name": best.setup_name,
             "score": best.score,
             "regime": regime,
             "direction": best.direction,
+            "session_name": session,
+            "candidates": candidate_snapshot,
         }
         logger.info(
             "v7 %s %s score=%d @ %.2f | SL %.2f | TP %.2f | cost $%.3f | risk $%.3f",

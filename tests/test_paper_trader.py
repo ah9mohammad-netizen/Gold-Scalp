@@ -84,7 +84,9 @@ class PaperTraderTests(unittest.TestCase):
 
         # Replaying the same bar after a restart/poll cannot create another fill.
         self.assertFalse(self.trader.process_new_market_data(second_bar))
-        self.assertEqual(self.database.get_statistics()["total_trades"], 1)
+        replay_stats = self.database.get_statistics()
+        self.assertEqual(replay_stats["total_trades"], 1)
+        self.assertEqual(replay_stats["market_bar_count"], 1)
 
     def test_export_snapshot_includes_wal_writes(self) -> None:
         signal_id = self.database.save_signal(
@@ -112,7 +114,14 @@ class PaperTraderTests(unittest.TestCase):
         try:
             with sqlite3.connect(snapshot) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
             self.assertEqual(count, 1)
+            self.assertTrue({"market_bars", "decision_audit", "trade_marks"}.issubset(tables))
         finally:
             shutil.rmtree(os.path.dirname(snapshot), ignore_errors=True)
 

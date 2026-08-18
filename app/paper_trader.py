@@ -257,6 +257,18 @@ class PaperTradingEngine:
             executable_high, executable_low = self._quote_range(
                 direction, current_high, current_low, spread
             )
+            market_exit = self._market_exit_fill(direction, current_price, spread)
+            estimated_net = self._estimated_net_at_exit(trade, market_exit)
+            bars_held = self._bars_held(trade, market_data)
+            self.db.record_trade_mark(
+                trade,
+                market_data,
+                executable_close=market_exit,
+                estimated_net_pnl_usd=estimated_net,
+                bars_held=bars_held,
+                executable_high=executable_high,
+                executable_low=executable_low,
+            )
 
             exit_reason: Optional[str] = None
             if direction == "LONG":
@@ -301,10 +313,8 @@ class PaperTradingEngine:
                 self._settle_trade(trade, exit_price, exit_reason)
                 continue
 
-            market_exit = self._market_exit_fill(direction, current_price, spread)
             exit_bar = dict(market_data)
-            exit_bar["estimated_net_pnl_usd"] = self._estimated_net_at_exit(trade, market_exit)
-            bars_held = self._bars_held(trade, market_data)
+            exit_bar["estimated_net_pnl_usd"] = estimated_net
             adaptive_reason: Optional[str] = None
             if hasattr(self.decision_engine, "check_adaptive_exit"):
                 adaptive_reason = self.decision_engine.check_adaptive_exit(
@@ -322,6 +332,7 @@ class PaperTradingEngine:
     ) -> Optional[Dict[str, Any]]:
         """Apply the configured adverse paper fill and re-check cost/risk caps."""
         final = dict(plan)
+        final.setdefault("rsi_at_entry", market_data.get("rsi_14"))
         direction = str(final["direction"])
         reference = float(final.get("reference_price", final["entry_price"]))
         spread = max(0.0, float(market_data.get("spread", final.get("spread", 0.0))))
@@ -393,36 +404,91 @@ class PaperTradingEngine:
         )
         return final
 
+    def _save_decision_audit(
+        self,
+        market_data: Dict[str, Any],
+        status: str,
+        reason: str,
+        plan: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        # Account-level blocks happen before the strategy is evaluated.  Do not
+        # attach a stale setup/score from the previous candle to those rows.
+        evaluation = (
+            dict(getattr(self.decision_engine, "last_evaluation", {}) or {})
+            if status == "REJECTED" or plan is not None
+            else {}
+        )
+        if plan:
+            evaluation.update(
+                {
+                    "setup_name": plan.get("setup_name"),
+                    "direction": plan.get("direction"),
+                    "session_name": plan.get("session_name", plan.get("killzone_session")),
+                    "regime": plan.get("regime"),
+                    "signal_score": plan.get("signal_score"),
+                    "strategy_version": plan.get("strategy_version", config.STRATEGY_VERSION),
+                }
+            )
+        evaluation.update(
+            {
+                "status": status,
+                "reason": reason,
+                "account_balance": self.db.get_current_balance(),
+                "daily_realized_pnl": self.db.get_daily_realized_pnl(),
+                "open_trade_count": len(self.db.get_open_trades()),
+                "strategy_version": evaluation.get("strategy_version", config.STRATEGY_VERSION),
+            }
+        )
+        self.db.save_decision_audit(market_data, evaluation)
+
     def try_open_new_trade(self, market_data: Dict[str, Any]) -> None:
         if not self.new_entries_enabled:
+            self._save_decision_audit(market_data, "BLOCKED", "ENTRIES_PAUSED")
             return
         now = datetime.now(timezone.utc)
         force = bool(market_data.get("force_signal"))
         bar_timestamp = market_data.get("bar_timestamp_ms")
         if self._entries_blocked_until and now < self._entries_blocked_until and not force:
+            self._save_decision_audit(market_data, "BLOCKED", "ENTRY_COOLDOWN")
             return
         if len(self.db.get_open_trades()) >= config.MAX_OPEN_TRADES:
+            self._save_decision_audit(market_data, "BLOCKED", "MAX_OPEN_TRADES")
             return
         if not force and self.db.has_signal_for_bar(bar_timestamp):
+            # Preserve the existing EXECUTED audit row instead of replacing it
+            # with a restart/idempotency reason for the same candle.
             return
         if not force and self.db.count_trades_opened_today() >= config.MAX_TRADES_PER_DAY:
             logger.info("Max trades/day (%s) reached", config.MAX_TRADES_PER_DAY)
+            self._save_decision_audit(market_data, "BLOCKED", "MAX_TRADES_PER_DAY")
             return
 
         balance = self.db.get_current_balance()
         if balance < 5.0:
             logger.warning("Balance too low ($%.2f)", balance)
+            self._save_decision_audit(market_data, "BLOCKED", "BALANCE_TOO_LOW")
             return
         if not force and self._daily_loss_breached(balance):
             logger.warning("Daily loss limit reached; entries blocked")
+            self._save_decision_audit(market_data, "BLOCKED", "DAILY_LOSS_LIMIT")
             return
 
         plan = self.decision_engine.evaluate(market_data, balance)
         if not plan:
+            evaluation = getattr(self.decision_engine, "last_evaluation", {}) or {}
+            self._save_decision_audit(
+                market_data,
+                str(evaluation.get("status") or "REJECTED"),
+                str(evaluation.get("reason") or "NO_STRATEGY_PLAN"),
+            )
             return
-        plan = self._finalize_paper_fill(plan, market_data, balance)
+        raw_plan = plan
+        plan = self._finalize_paper_fill(raw_plan, market_data, balance)
         if not plan:
             logger.warning("Paper fill rejected by margin/price guard")
+            self._save_decision_audit(
+                market_data, "FILL_REJECTED", "MARGIN_OR_RISK_GUARD", raw_plan
+            )
             return
         direction = str(plan["direction"])
 
@@ -431,6 +497,7 @@ class PaperTradingEngine:
         plan["signal_id"] = signal_id
         trade_id = self.db.open_trade(plan)
         self.db.update_signal_status(signal_id, "EXECUTED")
+        self._save_decision_audit(market_data, "EXECUTED", "TRADE_OPENED", plan)
 
         self.emit_alert(
             f"🚀 <b>NEW PAPER TRADE #{trade_id}</b> · <code>{plan.get('strategy_version', config.STRATEGY_VERSION)}</code>\n"
@@ -464,6 +531,10 @@ class PaperTradingEngine:
 
         if not force and bar_timestamp and bar_timestamp <= self._last_processed_bar_ms:
             return False
+
+        # Keep the full closed-bar feature set.  Signals alone would omit every
+        # rejected opportunity and make later strategy research selection-biased.
+        self.db.save_market_bar(market_data)
 
         # Manage first: a new decision cannot benefit from the bar that created it.
         self.evaluate_open_trades(market_data)

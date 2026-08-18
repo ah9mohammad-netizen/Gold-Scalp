@@ -108,16 +108,17 @@ This means a nominal stop plus fees should remain inside the risk budget. The st
 
 ## Stored audit fields
 
-The schema migrates existing Railway volumes in place. New records store:
+The schema migrates existing Railway volumes in place. It deliberately stores more than executed trades:
 
-- strategy version, setup, session and regime;
-- signal score;
-- initial and current stop;
-- entry ATR, fee rate and maximum holding bars;
-- estimated cost, initial full-risk amount and expected net reward; and
-- gross PnL, both fees, net PnL and exit reason.
+- `market_bars`: every consumed closed M5 candle, raw OHLCV/quote fields, indicators and structural levels;
+- `decision_audit`: one outcome for every consumed bar—executed, strategy-rejected, fill-rejected, paused, cooldown, position cap, daily cap or loss limit—with a flexible JSON snapshot;
+- `trade_marks`: each subsequent closed bar during a position, executable mark, estimated net PnL, active stop/target and indicator state;
+- `signals`: accepted setup snapshots; and
+- `trades`: strategy version, setup, session, regime, score, initial/current stop, ATR, fee rate, holding bars, expected cost/reward, MFE, MAE, MFE-R, MAE-R, best/worst estimated net PnL, gross PnL, both fees, net PnL and exit reason.
 
-Telegram `/stats` now reports setup-level trades, wins and net PnL. `/status` reports the most recent v7 acceptance or rejection reason.
+This avoids survivor/selection bias from studying only executed trades. It also permits later analysis of whether a different score threshold would have changed opportunity count, whether stops were structurally too tight, and whether exits surrendered useful MFE. It still cannot reconstruct tick-level order sequencing or prove that a different rule would have filled.
+
+Telegram `/stats` reports setup outcomes, decision-status/reason counts, market-bar count and trade-mark count. `/status` reports the latest v7 acceptance or rejection reason.
 
 ## Promotion/rejection protocol
 

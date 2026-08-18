@@ -8,7 +8,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 - Supports the v7 adaptive-session forward-paper router: tagged liquidity, trend, momentum, and range-reclaim setups
 - Sizes v7 positions from stop distance **plus estimated round-trip costs**, with a 0.50% effective risk cap
 - Simulates bid/ask execution, slippage, and explicitly selected taker/maker fees; stores gross and **net** results
-- Persists setup, regime, score, costs, holding limits, trades, account history, and state in `/data/history.db`
+- Persists every closed market bar, accepted/rejected decision, open-trade mark, setup/regime/score, MFE/MAE, costs, trades, account history, and state in `/data/history.db`
 - Offers Telegram alerts, pause/resume, trade/status commands, and `/get_db` SQLite export
 - **Cannot trade live.** The app refuses `PAPER_TRADING=false` until an independently reviewed ApeX executor exists.
 
@@ -17,6 +17,7 @@ A Railway-friendly **paper-trading** worker for researching a closed-candle XAU-
 ## Research and strategy
 
 - [v7 adaptive-session forward-paper specification](STRATEGY_V7.md) — strategy rewrite, frequency defect diagnosis, score router, cost-inclusive sizing, real-indicator exits, and frozen evaluation protocol
+- [`history.db` forward-research guide](HISTORY_DB_RESEARCH_GUIDE.md) — table semantics, selection-bias controls, MFE/MAE caveats, SQL diagnostics, and evaluation discipline
 - [6-Pillar Institutional XAU-USDT Scalping Framework](SIX_PILLAR_XAUUSD_FRAMEWORK.md) — prior v6 experiment retained for audit; it is not the recommended Railway strategy
 - [Gold automation research and strategy decision memo](GOLD_AUTOMATION_RESEARCH_2026.md) — strategy families, venue facts, rejected approaches, research gates, and sources
 - [Cost-aware main-history backtest](BACKTEST_MAIN_HISTORY_V5_COST_AWARE.md) — reproducible 443,451-bar run of the current baseline; negative net result means it remains paper-only

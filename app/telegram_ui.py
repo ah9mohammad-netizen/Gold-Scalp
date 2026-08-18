@@ -248,7 +248,7 @@ class TelegramUI:
                     f"• Consistent export: <b>{size_kb:.1f} KB</b>\n"
                     f"• Closed trades: <b>{st['total_trades']}</b>\n"
                     f"• Realized balance: <b>${st['current_balance']:.2f} USDT</b>\n"
-                    "Includes signals, fills, fee/slippage fields and account history."
+                    "Includes closed bars, decision audit, trade marks/MFE/MAE, fills, fees and account history."
                 )
                 await self.send_message(
                     "⏳ Creating and uploading a consistent <code>history.db</code> snapshot...",
@@ -409,6 +409,14 @@ class TelegramUI:
                 if setup_breakdown
                 else "n/a"
             )
+            decision_status = st.get("decision_status") or {}
+            decision_text = ", ".join(
+                f"{name}:{count}" for name, count in decision_status.items()
+            ) or "n/a"
+            rejection_text = ", ".join(
+                f"{name}:{count}"
+                for name, count in (st.get("decision_reasons") or {}).items()
+            ) or "n/a"
             msg = (
                 "📈 <b>Performance Statistics</b>\n\n"
                 f"• Trades: <b>{st['total_trades']}</b> "
@@ -424,6 +432,10 @@ class TelegramUI:
                 f"${st['initial_balance']:.2f} USDT\n"
                 f"• Exits: <code>{bd}</code>\n"
                 f"• Setups (trades/wins/PnL): <code>{setup_text}</code>\n"
+                f"• Decisions: <code>{decision_text}</code>\n"
+                f"• Top decision reasons: <code>{rejection_text}</code>\n"
+                f"• Research rows: <b>{st.get('market_bar_count', 0)} bars</b> / "
+                f"<b>{st.get('trade_mark_count', 0)} trade marks</b>\n"
                 f"• DB: <code>{st['db_path']}</code>"
             )
             await self.send_message(msg, chat_id=chat_id)

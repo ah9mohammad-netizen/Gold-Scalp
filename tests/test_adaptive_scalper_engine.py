@@ -157,6 +157,9 @@ class AdaptiveSessionScalperTests(unittest.TestCase):
             self.assertEqual(len(opened), 1)
             self.assertTrue(opened[0]["setup_name"])
             self.assertEqual(opened[0]["strategy_version"], "v7-adaptive-session-scalper")
+            first_stats = database.get_statistics()
+            self.assertEqual(first_stats["market_bar_count"], 1)
+            self.assertEqual(first_stats["decision_status"].get("EXECUTED"), 1)
 
             second = dict(first)
             second["timestamp"] = first["timestamp"] + timedelta(minutes=5)
@@ -170,8 +173,17 @@ class AdaptiveSessionScalperTests(unittest.TestCase):
             self.assertEqual(database.get_open_trades(), [])
             closed = database.get_recent_trades(limit=1)[0]
             self.assertEqual(closed["exit_reason"], "TIME_EXIT")
-            setup_stats = database.get_statistics()["setup_breakdown"]
+            final_stats = database.get_statistics()
+            setup_stats = final_stats["setup_breakdown"]
             self.assertEqual(setup_stats[closed["setup_name"]]["trades"], 1)
+            self.assertEqual(final_stats["market_bar_count"], 2)
+            self.assertEqual(final_stats["trade_mark_count"], 1)
+            self.assertGreaterEqual(int(closed["bars_held"]), 1)
+            self.assertIsNotNone(closed["max_estimated_net_pnl_usd"])
+            self.assertGreaterEqual(float(closed["mfe_usd_per_oz"]), 0.0)
+            # Closing arms the cooldown, which must be auditable rather than
+            # disappearing from a signals-only data set.
+            self.assertEqual(final_stats["decision_reasons"].get("ENTRY_COOLDOWN"), 1)
         finally:
             tempdir.cleanup()
 
