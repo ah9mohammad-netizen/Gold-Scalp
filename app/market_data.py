@@ -18,16 +18,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import config
-from app.engine import TechnicalIndicators
+from app.indicators import TechnicalIndicators
 
 logger = logging.getLogger("LiveMarketData")
-
-try:
-    import ccxt  # type: ignore
-
-    CCXT_AVAILABLE = True
-except ImportError:
-    CCXT_AVAILABLE = False
 
 
 def _http_get_json(url: str, timeout: float = 8.0) -> Optional[Any]:
@@ -75,6 +68,22 @@ class LiveMarketDataFeed:
         self.last_tick: Optional[Dict[str, Any]] = None
         self.consecutive_failures = 0
         self.timeframe_seconds = _timeframe_seconds(config.TIMEFRAME)
+        # Bootstrap with enough history once, then merge only the newest rows.
+        # The previous implementation downloaded 600 candles every five
+        # seconds, wasting Railway CPU/network without creating new M5 data.
+        self._ohlcv_cache: Dict[str, Dict[int, list]] = {}
+
+    def _merge_ohlcv(self, source: str, rows: List[list], keep: int) -> List[list]:
+        cache = self._ohlcv_cache.setdefault(source, {})
+        for row in rows:
+            try:
+                cache[int(float(row[0]))] = row
+            except (IndexError, TypeError, ValueError):
+                continue
+        if len(cache) > keep:
+            for timestamp in sorted(cache)[: len(cache) - keep]:
+                del cache[timestamp]
+        return [cache[timestamp] for timestamp in sorted(cache)]
 
     def _closed_rows(self, rows: List[list]) -> List[list]:
         """Validate, sort and remove the live/incomplete candle."""
@@ -198,12 +207,6 @@ class LiveMarketDataFeed:
         pdh = max((highs[i] for i in previous_day_indexes), default=0.0) if previous_day_complete else 0.0
         pdl = min((lows[i] for i in previous_day_indexes), default=0.0) if previous_day_complete else 0.0
 
-        ny_orb = [
-            i
-            for i, ts in enumerate(timestamps)
-            if _bar_date_utc(ts) == latest_day
-            and config.NY_ORB_START_HOUR_UTC <= _bar_hour_utc(ts) < config.NY_ORB_END_HOUR_UTC
-        ]
         tick: Dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(
                 (latest_bar_ms / 1000.0) + self.timeframe_seconds, tz=timezone.utc
@@ -246,9 +249,6 @@ class LiveMarketDataFeed:
             "asian_range_ready": len(asian) >= 6 and latest_hour >= config.ASIAN_END_HOUR_UTC,
             "pdh": round(pdh, 4),
             "pdl": round(pdl, 4),
-            "ny_orb_high": round(max((highs[i] for i in ny_orb), default=0.0), 4),
-            "ny_orb_low": round(min((lows[i] for i in ny_orb), default=0.0), 4),
-            "ny_orb_ready": len(ny_orb) >= 6 and latest_hour >= config.NY_ORB_DECISION_HOUR_UTC,
             "prev_close": round(closes[-2], 4),
             "prev_close_2": round(closes[-3], 4),
             "prev_high": round(highs[-2], 4),
@@ -281,27 +281,31 @@ class LiveMarketDataFeed:
             return 0.0, 0.0
 
     def _fetch_bybit_rest_sync(self) -> Optional[Dict[str, Any]]:
+        limit = 600 if not self._ohlcv_cache.get("BYBIT_LINEAR") else 5
         data = _http_get_json(
             "https://api.bybit.com/v5/market/kline?category=linear&symbol=XAUUSDT"
-            f"&interval={self._bybit_interval()}&limit=600"
+            f"&interval={self._bybit_interval()}&limit={limit}"
         )
         if not data or data.get("retCode") != 0:
             return None
         # API returns reverse chronological rows.
         rows = list(reversed(data.get("result", {}).get("list") or []))
-        ohlcv = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+        fresh = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+        ohlcv = self._merge_ohlcv("BYBIT_LINEAR", fresh, keep=600)
         bid, ask = self._bybit_ticker()
         return self._build_tick_result("BYBIT_LINEAR", "XAUUSDT", ohlcv, bid, ask)
 
     def _fetch_okx_rest_sync(self) -> Optional[Dict[str, Any]]:
+        limit = 300 if not self._ohlcv_cache.get("OKX_SWAP") else 5
         data = _http_get_json(
             "https://www.okx.com/api/v5/market/candles?instId=XAU-USDT-SWAP"
-            f"&bar={config.TIMEFRAME}&limit=300"
+            f"&bar={config.TIMEFRAME}&limit={limit}"
         )
         if not data or data.get("code") != "0":
             return None
         rows = list(reversed(data.get("data") or []))
-        ohlcv = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+        fresh = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+        ohlcv = self._merge_ohlcv("OKX_SWAP", fresh, keep=300)
         ticker = _http_get_json(
             "https://www.okx.com/api/v5/market/ticker?instId=XAU-USDT-SWAP", timeout=5.0
         )
@@ -311,29 +315,6 @@ class LiveMarketDataFeed:
         except (KeyError, IndexError, TypeError, ValueError):
             bid, ask = 0.0, 0.0
         return self._build_tick_result("OKX_SWAP", "XAU-USDT-SWAP", ohlcv, bid, ask)
-
-    def _fetch_ccxt_direct_sync(self) -> Optional[Dict[str, Any]]:
-        if not CCXT_AVAILABLE:
-            return None
-        # Keep the configured exchange first, then use the other direct venue.
-        venues = [("bybit", "XAU/USDT:USDT"), ("okx", "XAU/USDT:USDT")]
-        venues.sort(key=lambda item: item[0] != config.EXCHANGE_ID.lower())
-        for exchange_id, symbol in venues:
-            try:
-                exchange_class = getattr(ccxt, exchange_id)
-                exchange = exchange_class({"timeout": 8000, "enableRateLimit": True})
-                history_limit = 600 if exchange_id == "bybit" else 300
-                rows = exchange.fetch_ohlcv(symbol, timeframe=config.TIMEFRAME, limit=history_limit)
-                ticker = exchange.fetch_ticker(symbol)
-                bid, ask = float(ticker.get("bid") or 0), float(ticker.get("ask") or 0)
-                tick = self._build_tick_result(
-                    f"CCXT_{exchange_id.upper()}", symbol, rows, bid, ask
-                )
-                if tick:
-                    return tick
-            except Exception as exc:
-                logger.debug("CCXT direct %s unavailable: %s", exchange_id, exc)
-        return None
 
     def _fetch_paxg_proxy_sync(self) -> Optional[Dict[str, Any]]:
         if not config.ALLOW_PROXY_FEEDS:
@@ -354,7 +335,7 @@ class LiveMarketDataFeed:
         preferred = [self._fetch_bybit_rest_sync, self._fetch_okx_rest_sync]
         if config.EXCHANGE_ID.lower() == "okx":
             preferred.reverse()
-        for fetcher in (*preferred, self._fetch_ccxt_direct_sync, self._fetch_paxg_proxy_sync):
+        for fetcher in (*preferred, self._fetch_paxg_proxy_sync):
             try:
                 tick = fetcher()
                 if tick:

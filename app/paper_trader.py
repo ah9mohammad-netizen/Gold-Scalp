@@ -16,7 +16,6 @@ from typing import Any, Callable, Dict, Optional, Set
 
 from app.config import config
 from app.database import DatabaseEngine, db
-from app.engine import LayeredDecisionEngine, engine
 
 logger = logging.getLogger("PaperTrader")
 
@@ -30,14 +29,14 @@ class PaperTradingEngine:
         self.db = database or db
         if decision_engine is not None:
             self.decision_engine = decision_engine
-        elif config.ENABLE_ADAPTIVE_SCALPER:
-            from app.adaptive_scalper_engine import adaptive_scalper_engine
-            self.decision_engine = adaptive_scalper_engine
-        elif config.ENABLE_SIX_PILLAR_SCALPER:
-            from app.six_pillar_engine import six_pillar_engine
-            self.decision_engine = six_pillar_engine
         else:
-            self.decision_engine = engine
+            if not config.ENABLE_ADAPTIVE_SCALPER:
+                raise RuntimeError(
+                    "Only STRATEGY_VERSION=v7-adaptive-session-scalper is supported"
+                )
+            from app.adaptive_scalper_engine import adaptive_scalper_engine
+
+            self.decision_engine = adaptive_scalper_engine
         self.new_entries_enabled = True
         self.alert_callback: Optional[Callable[..., Any]] = None
         self.last_price = 0.0
@@ -237,7 +236,6 @@ class PaperTradingEngine:
         current_price = float(market_data["close"])
         current_high = float(market_data.get("high", current_price))
         current_low = float(market_data.get("low", current_price))
-        atr = float(market_data.get("atr_14", self.last_atr))
         spread = max(0.0, float(market_data.get("spread", self.last_spread)))
 
         for trade in self.db.get_open_trades():
@@ -284,10 +282,6 @@ class PaperTradingEngine:
                         f"🔒 <b>COST LOCK #{trade_id}</b> LONG @ ${entry:.2f}\n"
                         f"SL → ${locked_sl:.2f} | TP ${tp:.2f}"
                     )
-                elif config.ENABLE_TRAIL and armed:
-                    trail = max(sl, current_price - max(atr * config.TRAIL_ATR_MULTIPLIER, 0.01))
-                    if trail > sl:
-                        self.db.update_trade_sl(trade_id, round(trail, 4))
             else:
                 if executable_high >= sl:
                     exit_reason = "BE_STOP" if armed and sl <= entry else "SL_HIT"
@@ -301,10 +295,6 @@ class PaperTradingEngine:
                         f"🔒 <b>COST LOCK #{trade_id}</b> SHORT @ ${entry:.2f}\n"
                         f"SL → ${locked_sl:.2f} | TP ${tp:.2f}"
                     )
-                elif config.ENABLE_TRAIL and armed:
-                    trail = min(sl, current_price + max(atr * config.TRAIL_ATR_MULTIPLIER, 0.01))
-                    if trail < sl:
-                        self.db.update_trade_sl(trade_id, round(trail, 4))
 
             if exit_reason:
                 exit_price = self._exit_fill(
@@ -319,10 +309,6 @@ class PaperTradingEngine:
             if hasattr(self.decision_engine, "check_adaptive_exit"):
                 adaptive_reason = self.decision_engine.check_adaptive_exit(
                     trade, exit_bar, bars_held
-                )
-            elif hasattr(self.decision_engine, "check_pillar5_exits"):
-                adaptive_reason = self.decision_engine.check_pillar5_exits(
-                    trade, exit_bar, bars_held=bars_held
                 )
             if adaptive_reason:
                 self._settle_trade(trade, market_exit, adaptive_reason)
@@ -343,8 +329,8 @@ class PaperTradingEngine:
             return None
 
         sl_distance = float(final["sl_distance"])
-        tp_rr = float(final.get("tp_rr", config.TP_RR_RATIO))
-        be_rr = float(final.get("be_trigger_rr", config.BE_TRIGGER_RR))
+        tp_rr = float(final.get("tp_rr", config.V7_TREND_TP_RR))
+        be_rr = float(final.get("be_trigger_rr", config.V7_BE_TRIGGER_RR))
         tp_distance = sl_distance * tp_rr
         be_distance = sl_distance * be_rr
         if direction == "LONG":

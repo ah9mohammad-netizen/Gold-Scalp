@@ -11,10 +11,17 @@ env/
 venv/
 ENV/
 
-# Database files
+# Database and generated research data
 *.db
 *.sqlite
 *.sqlite3
+*.csv
+*.csv.gz
+*.parquet
+*.feather
+*.xlsx
+data/
+research-output/
 
 # OS generated files
 .DS_Store

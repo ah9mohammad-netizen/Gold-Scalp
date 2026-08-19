@@ -1,9 +1,0 @@
-name,require_dxy_direction,stress_veto,label,window,trades,wins,losses,time_exits,vetoed_entries,final_balance,return_pct,profit_factor,max_realized_drawdown,fees
-No macro gate,False,False,No daily macro gate,Development (2019-09 to 2022-12),299,102,197,43,0,25.1526,-74.8474,0.49882304920982734,75.2333,42.5614
-DXY 5d direction,True,False,DXY 5d direction,Development (2019-09 to 2022-12),182,59,123,23,838,38.8811,-61.1189,0.46093458372579804,61.5434,31.1561
-Stress veto,False,True,stress veto,Development (2019-09 to 2022-12),133,41,92,28,1093,49.6328,-50.3672,0.40826129590574617,51.7231,24.6245
-DXY + stress,True,True,DXY 5d direction + stress veto,Development (2019-09 to 2022-12),85,23,62,14,1501,55.4617,-44.5383,0.3090701535734202,44.9085,16.5695
-No macro gate,False,False,No daily macro gate,Validation (2023-2024),210,75,135,38,0,35.9433,-64.0567,0.5267751413293398,64.0567,46.7177
-No macro gate,False,False,No daily macro gate,Validation (2023-2024),210,75,135,38,0,35.9433,-64.0567,0.5267751413293398,64.0567,46.7177
-No macro gate,False,False,No daily macro gate,Holdout (2025 onward),161,56,105,11,0,34.1847,-65.8153,0.41830770224780467,66.0392,42.3433
-No macro gate,False,False,No daily macro gate,Holdout (2025 onward),161,56,105,11,0,34.1847,-65.8153,0.41830770224780467,66.0392,42.3433
